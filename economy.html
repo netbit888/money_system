@@ -1,0 +1,1215 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>简易经济系统（多实体交换）</title>
+<style>
+  body { font-family: "Microsoft YaHei", Arial, sans-serif; margin: 20px; background: #f5f5f5; color: #333; }
+  h1 { font-size: 20px; }
+  h2 { font-size: 16px; margin-top: 24px; border-left: 4px solid #4a90d9; padding-left: 8px; }
+  h3 { font-size: 14px; margin-top: 14px; margin-bottom: 4px; }
+  .panel { background: #fff; border: 1px solid #ddd; padding: 12px; margin-bottom: 16px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+  th, td { border: 1px solid #ddd; padding: 6px; text-align: center; font-size: 13px; }
+  th { background: #f0f0f0; }
+  input, button { padding: 4px 8px; font-size: 13px; }
+  button { cursor: pointer; margin: 2px; }
+  .btn-add { background: #4a90d9; color: #fff; border: none; }
+  .btn-del { background: #d9534f; color: #fff; border: none; }
+  .btn-calc { background: #5cb85c; color: #fff; border: none; padding: 6px 16px; }
+  .row { display: flex; gap: 6px; margin-bottom: 6px; align-items: center; flex-wrap: wrap; }
+  .row input { flex: 1; min-width: 60px; }
+  .log { background: #fafafa; border: 1px solid #ddd; padding: 8px; font-family: monospace; font-size: 12px; white-space: pre-wrap; max-height: 500px; overflow-y: auto; }
+  .person-item { display: inline-block; background: #eef; border: 1px solid #ccd; padding: 4px 10px; margin: 2px; cursor: pointer; }
+  .person-item.active { background: #4a90d9; color: #fff; }
+  .small { font-size: 12px; color: #888; }
+</style>
+</head>
+<body>
+
+<h1>简易经济系统（多实体交换）</h1>
+<div class="small">后端 Python 引擎 + 前端 fetch 调用。服务地址：<code id="apiBase">http://127.0.0.1:8000</code></div>
+
+<div class="panel">
+  <h2>一键配置（同时导入基础设置 + 个体）</h2>
+  <div class="small">后端从 config 文件夹读取 economy_defaults.json 和 economy_persons.json</div>
+  <div class="row" style="margin:8px 0;">
+    <button class="btn-add" data-lock="1" onclick="importFromConfigFolder()">一键导入 config 配置</button>
+  </div>
+</div>
+
+<div class="panel">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="margin:0;">一、基础设置（抽象模板，新建个体时的初始值）</h2>
+    <button class="btn-calc" onclick="toggleDefaults()" id="defaultsToggleBtn" style="background:#6c757d; padding:4px 12px;">展开基础设置</button>
+  </div>
+  <div id="defaultsBody" style="display:none; margin-top:8px;">
+    <div class="small">修改此处不影响已存在的个体，仅影响之后新建的个体</div>
+    <div class="row" style="margin:8px 0;">
+      <button class="btn-add" onclick="exportDefaults()">导出基础设置</button>
+      <input type="file" id="importDefaultsFile" accept=".json,application/json" style="display:none" onchange="importDefaults(event)">
+      <button class="btn-add" onclick="document.getElementById('importDefaultsFile').click()">导入基础设置</button>
+    </div>
+
+    <h3>默认代谢</h3>
+    <div class="row" style="margin:6px 0;">
+      <input id="dMetaRes" placeholder="资源名(如食物)">
+      <input id="dMetaAmt" type="number" step="0.5" min="0" placeholder="数量">
+      <button class="btn-add" onclick="updateDefaultMeta()">应用</button>
+      <span class="small">每回合扣减 amount 单位 res</span>
+    </div>
+
+    <h3>默认收入</h3>
+    <div class="row" style="margin:6px 0;">
+      <input id="dIncRes" placeholder="资源名(如钱)">
+      <input id="dIncAmt" type="number" step="0.5" min="0" placeholder="数量">
+      <button class="btn-add" onclick="updateDefaultInc()">应用</button>
+      <span class="small">每回合增加 amount 单位 res</span>
+    </div>
+
+    <div class="row" style="margin:6px 0; align-items:center;">
+      <label style="font-size:13px; cursor:pointer;">
+        <input type="checkbox" id="dReproEnable" onchange="toggleReproParams()" checked> 允许繁殖
+      </label>
+    </div>
+    <div id="reproParams" style="margin-top:4px;">
+      <div class="row" style="margin:4px 0;">
+        <label style="font-size:13px; white-space:nowrap;">代谢资源 &gt; <input id="dReproTh" type="number" step="0.1" min="0.5" placeholder="2.0" style="width:60px;" onchange="updateDefaultRepro()"> × 代谢值 → 繁殖</label>
+      </div>
+      <div class="row" style="margin:4px 0;">
+        <label style="font-size:13px; white-space:nowrap;">子代继承 <input id="dReproInherit" type="number" step="0.1" min="0.1" placeholder="1.0" style="width:60px;" onchange="updateDefaultRepro()"> × 代谢值</label>
+      </div>
+    </div>
+
+    <h3>默认属性</h3>
+    <div id="defaultAttrs"></div>
+    <div class="row" style="margin-top:6px;">
+      <input id="dAttrKey" placeholder="属性名">
+      <input id="dAttrVal" type="number" placeholder="数值">
+      <button class="btn-add" onclick="addDefaultAttr()">添加</button>
+    </div>
+
+    <h3>默认需求</h3>
+    <div id="defaultNeeds"></div>
+    <div class="row" style="margin-top:6px;">
+      <input id="dNeedKey" placeholder="资源名">
+      <input id="dNeedVal" type="number" placeholder="数量">
+      <button class="btn-add" onclick="addDefaultNeed()">添加</button>
+    </div>
+
+    <h3>默认挂牌规则（出售 1 单位资源 = 单价 × 接收资源；单价越低越先被买家选中）</h3>
+    <div id="defaultRules"></div>
+    <div class="row" style="margin-top:6px;">
+      <input id="dFrom" placeholder="出售资源(如food)">
+      <input id="dTo" placeholder="接收资源(如money)">
+      <input id="dRate" type="number" step="0.01" placeholder="单价(1卖=?收)">
+      <button class="btn-add" onclick="addDefaultRule()">添加</button>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="margin:0;">二、个体管理</h2>
+    <button class="btn-calc" onclick="togglePersonMgmt()" id="personMgmtToggleBtn" style="background:#6c757d; padding:4px 12px;">隐藏个体管理</button>
+  </div>
+  <div id="personMgmtBody" style="margin-top:8px;">
+    <div class="row">
+      <input id="newPersonName" placeholder="个体名称（可留空，自动命名）">
+      <button class="btn-add" onclick="addPerson()">创建个体</button>
+      <button class="btn-add" onclick="exportConfig()">导出配置</button>
+      <input type="file" id="importFile" accept=".json,application/json" style="display:none" onchange="importConfig(event)">
+      <button class="btn-add" onclick="document.getElementById('importFile').click()">导入配置</button>
+    </div>
+    <div id="listControls" style="margin:8px 0; display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:8px; background:#f5f5f5; border-radius:4px;">
+      <input type="text" id="listSearch" placeholder="搜索名字或 ID" style="flex:1; min-width:150px; padding:4px 8px;" oninput="onSearchInput()">
+      <select id="listType" onchange="onListFilterChange()" style="padding:4px;">
+        <option value="">全部类型</option>
+      </select>
+      <button id="prevBtn" class="btn-calc" onclick="prevPage()" style="padding:4px 12px; background:#6c757d;">◀</button>
+      <span id="pageInfo" style="min-width:140px; text-align:center; font-size:13px;">1/1</span>
+      <button id="nextBtn" class="btn-calc" onclick="nextPage()" style="padding:4px 12px; background:#6c757d;">▶</button>
+      <select id="pageSize" onchange="onPageSizeChange()" style="padding:4px;">
+        <option value="50">50/页</option>
+        <option value="100">100/页</option>
+        <option value="200">200/页</option>
+      </select>
+    </div>
+    <div id="personList" style="margin-top:8px;"></div>
+  </div>
+</div>
+
+<div class="panel" id="detailPanel" style="display:none;">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="margin:0;">三、个体详情（选中个体后可独立修改其属性、需求、规则）</h2>
+    <button class="btn-calc" onclick="toggleDetail()" id="detailToggleBtn" style="background:#6c757d; padding:4px 12px;">隐藏个体详情</button>
+  </div>
+  <div id="detailBody" style="margin-top:8px;">
+    <div id="detailContent"></div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>四、回合</h2>
+  <div style="margin-bottom:8px;">当前回合：<b id="roundNum">0</b> &nbsp;|&nbsp; 每回合：基础代谢扣减（按各自代谢资源）+ 基础收入增加（按各自收入资源）+ 死亡/繁殖/抚养 + 交换计算</div>
+  <button class="btn-calc" data-lock="1" onclick="nextRound()">下一回合（代谢+收入+死亡/繁殖/抚养）</button>
+  <button class="btn-calc" data-lock="1" onclick="calculate()" style="background:#f0ad4e;">本回合交换计算</button>
+  <button class="btn-calc" data-lock="1" onclick="nextRoundAndCalculate()" style="background:#9b59b6;">下一回合并交换计算</button>
+  <button class="btn-del" data-lock="1" onclick="resetRound()" style="padding:6px 16px;">重置回合</button>
+  <button class="btn-calc" onclick="toggleLog()" id="logToggleBtn" style="background:#6c757d; padding:6px 16px;">隐藏日志</button>
+  <button class="btn-calc" onclick="togglePieChart()" id="pieToggleBtn" style="background:#6c757d; padding:6px 16px;">隐藏扇形图</button>
+  <button class="btn-calc" onclick="toggleHistoryChart()" id="historyToggleBtn" style="background:#6c757d; padding:6px 16px;">显示历史曲线</button>
+  <div class="log" id="log" style="margin-top:12px;">等待操作...（前端 fetch 调用后端 API，引擎在 Python 跑）</div>
+  <div id="pieChartWrap" style="margin-top:12px; padding:8px; border-top:1px solid #ddd;">
+    <b style="font-size:14px;">个体种类比例</b><span style="font-size:12px; color:#888;">（母体与子代归为同类）</span>
+    <div id="pieChart" style="margin-top:6px;"></div>
+  </div>
+  <div id="historyChartWrap" style="display:none; margin-top:12px; padding:8px; border-top:1px solid #ddd;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+      <b style="font-size:14px;">历史曲线</b>
+      <div>
+        <label style="font-size:12px; margin-right:8px;">
+          <input type="checkbox" id="histShowTotal" checked onchange="renderHistoryChart()"> 总人口
+        </label>
+        <label style="font-size:12px; margin-right:8px;">
+          <input type="checkbox" id="histShowGroups" onchange="renderHistoryChart()"> 各类人数
+        </label>
+        <label style="font-size:12px; margin-right:8px;">
+          <input type="checkbox" id="histShowResources" onchange="renderHistoryChart()"> 资源总量
+        </label>
+        <button class="btn-del" onclick="clearHistory()" style="padding:4px 10px; font-size:12px;">清空历史</button>
+      </div>
+    </div>
+    <div id="historyChart" style="margin-top:6px;"></div>
+  </div>
+</div>
+
+<script>
+// ===================== 全局状态（前端缓存）=====================
+let defaultSettings = {
+  metabolism: { res: "食物", amount: 1 },
+  income: { res: "钱", amount: 1 },
+  canReproduce: true,
+  attrs: {},
+  needs: [],
+  rules: []
+};
+let persons = [];
+let selectedId = null;
+let round = 0;
+let lastSummary = { round: 0, total: 0, groups: {} };
+
+// 个体列表分页 / 搜索 / 筛选状态
+let listPage = 1;
+let listPageSize = 50;
+let listFilter = "";          // 搜索关键字
+let listTypeFilter = "";      // 类型筛选（基础名）
+let _searchDebounce = null;
+
+// ===================== API 调用封装 =====================
+async function api(method, path, body) {
+  const opts = { method, headers: { "Content-Type": "application/json" } };
+  if (body !== undefined && body !== null) opts.body = JSON.stringify(body);
+  const r = await fetch(path, opts);
+  let data = null;
+  try { data = await r.json(); } catch (e) { /* 无 JSON 体 */ }
+  if (!r.ok) throw new Error((data && data.detail) || `HTTP ${r.status}`);
+  return data;
+}
+
+// ===================== 工具函数 =====================
+function fmtNum(v) {
+  const n = Number(v);
+  if (!isFinite(n)) return "0";
+  if (Number.isInteger(n)) return String(n);
+  return n.toFixed(2);
+}
+
+function getBaseName(name) {
+  const idx = name.indexOf("#");
+  return idx > 0 ? name.substring(0, idx) : name;
+}
+
+function normMetabolism(m, fbRes) {
+  const fb = (typeof fbRes === "string" && fbRes.trim()) ? fbRes.trim() : "食物";
+  if (m && typeof m === "object") {
+    return { res: String(m.res == null ? "" : m.res).trim() || fb, amount: Math.max(0, Number(m.amount) || 0) };
+  }
+  if (typeof m === "string" && m.trim()) return { res: m.trim(), amount: 1 };
+  return { res: fb, amount: 1 };
+}
+
+function normAsk(r) {
+  let sell = "", buy = "", rate = 0;
+  if (r && typeof r === "object") {
+    if (r.sell !== undefined && r.buy !== undefined) { sell = r.sell; buy = r.buy; rate = r.rate; }
+    else if (r.res1 !== undefined && r.res2 !== undefined) { sell = r.res1; buy = r.res2; rate = r.rate; }
+    else if (r.from !== undefined && r.to !== undefined) { sell = r.from; buy = r.to; rate = r.rate; }
+  }
+  return { sell: String(sell || "").trim(), buy: String(buy || "").trim(), rate: Number(rate) || 0 };
+}
+
+function normalizePerson(p) {
+  // 后端返回的 person 已经是规范结构，这里仅做兜底
+  return {
+    id: p.id,
+    parentId: p.parentId ?? null,
+    name: p.name || "未命名",
+    metabolism: normMetabolism(p.metabolism, "食物"),
+    income: normMetabolism(p.income, "钱"),
+    canReproduce: p.canReproduce !== false,
+    reproThresholdMult: p.reproThresholdMult ?? 2.0,
+    reproInheritMult: p.reproInheritMult ?? 1.0,
+    attrs: p.attrs || {},
+    needs: (p.needs || []).map(n => ({ key: n.key, amount: n.amount })),
+    rules: (p.rules || []).map(r => normAsk(r))
+  };
+}
+
+function normalizeDefaults(d) {
+  return {
+    metabolism: normMetabolism(d.metabolism, "食物"),
+    income: normMetabolism(d.income, "钱"),
+    canReproduce: d.canReproduce !== false,
+    reproThresholdMult: d.reproThresholdMult ?? 2.0,
+    reproInheritMult: d.reproInheritMult ?? 1.0,
+    attrs: d.attrs || {},
+    needs: (d.needs || []).map(n => ({ key: n.key, amount: n.amount })),
+    rules: (d.rules || []).map(r => normAsk(r))
+  };
+}
+
+// ===================== 日志/扇形图 显示切换 =====================
+function toggleLog() {
+  const logEl = document.getElementById("log");
+  const btn = document.getElementById("logToggleBtn");
+  if (logEl.style.display === "none") { logEl.style.display = ""; btn.textContent = "隐藏日志"; }
+  else { logEl.style.display = "none"; btn.textContent = "显示日志"; }
+}
+
+function togglePieChart() {
+  const wrap = document.getElementById("pieChartWrap");
+  const btn = document.getElementById("pieToggleBtn");
+  if (wrap.style.display === "none") { wrap.style.display = ""; btn.textContent = "隐藏扇形图"; }
+  else { wrap.style.display = "none"; btn.textContent = "显示扇形图"; }
+}
+
+function toggleDefaults() {
+  const body = document.getElementById("defaultsBody");
+  const btn = document.getElementById("defaultsToggleBtn");
+  if (body.style.display === "none") { body.style.display = ""; btn.textContent = "隐藏基础设置"; }
+  else { body.style.display = "none"; btn.textContent = "展开基础设置"; }
+}
+
+function togglePersonMgmt() {
+  const body = document.getElementById("personMgmtBody");
+  const btn = document.getElementById("personMgmtToggleBtn");
+  if (body.style.display === "none") { body.style.display = ""; btn.textContent = "隐藏个体管理"; }
+  else { body.style.display = "none"; btn.textContent = "展开个体管理"; }
+}
+
+function toggleDetail() {
+  const body = document.getElementById("detailBody");
+  const btn = document.getElementById("detailToggleBtn");
+  if (body.style.display === "none") { body.style.display = ""; btn.textContent = "隐藏个体详情"; }
+  else { body.style.display = "none"; btn.textContent = "展开个体详情"; }
+}
+
+function toggleHistoryChart() {
+  const wrap = document.getElementById("historyChartWrap");
+  const btn = document.getElementById("historyToggleBtn");
+  if (wrap.style.display === "none") {
+    wrap.style.display = "";
+    btn.textContent = "隐藏历史曲线";
+    fetchHistoryAndRender();
+  } else {
+    wrap.style.display = "none";
+    btn.textContent = "显示历史曲线";
+  }
+}
+
+// ===================== 历史曲线（SVG 折线图）=====================
+let historyData = [];
+
+async function fetchHistoryAndRender() {
+  try {
+    const r = await fetch('/history?from=0');
+    if (!r.ok) throw new Error('获取历史失败');
+    const j = await r.json();
+    historyData = j.history || [];
+    renderHistoryChart();
+  } catch (e) {
+    document.getElementById("historyChart").innerHTML = `<i style="color:#c00;">${e.message}</i>`;
+  }
+}
+
+function renderHistoryChart() {
+  const box = document.getElementById("historyChart");
+  if (!box) return;
+  if (!historyData.length) {
+    box.innerHTML = "<i>无历史数据，先跑几个回合</i>";
+    return;
+  }
+
+  const showTotal = document.getElementById("histShowTotal").checked;
+  const showGroups = document.getElementById("histShowGroups").checked;
+  const showResources = document.getElementById("histShowResources").checked;
+
+  // 收集所有曲线
+  const series = [];
+  if (showTotal) {
+    series.push({ name: "总人口", data: historyData.map(h => h.total), color: "#2c3e50", dashed: false });
+  }
+  if (showGroups) {
+    const groupColors = ["#3498db", "#e74c3c", "#2ecc71", "#f39c12", "#9b59b6", "#1abc9c", "#e67e22", "#34495e"];
+    const groupNames = new Set();
+    historyData.forEach(h => Object.keys(h.groups || {}).forEach(g => groupNames.add(g)));
+    let ci = 0;
+    for (const g of groupNames) {
+      series.push({
+        name: g,
+        data: historyData.map(h => (h.groups || {})[g] || 0),
+        color: groupColors[ci % groupColors.length],
+        dashed: false,
+      });
+      ci++;
+    }
+  }
+  if (showResources) {
+    const resColors = ["#8e44ad", "#16a085", "#d35400", "#27ae60", "#c0392b", "#2980b9", "#f1c40f"];
+    const resNames = new Set();
+    historyData.forEach(h => Object.keys(h.resource_totals || {}).forEach(r => resNames.add(r)));
+    let ci = 0;
+    for (const r of resNames) {
+      series.push({
+        name: r,
+        data: historyData.map(h => (h.resource_totals || {})[r] || 0),
+        color: resColors[ci % resColors.length],
+        dashed: true,
+      });
+      ci++;
+    }
+  }
+
+  if (!series.length) {
+    box.innerHTML = "<i>请至少勾选一项</i>";
+    return;
+  }
+
+  // 计算 Y 轴范围
+  let yMin = Infinity, yMax = -Infinity;
+  for (const s of series) {
+    for (const v of s.data) {
+      if (v < yMin) yMin = v;
+      if (v > yMax) yMax = v;
+    }
+  }
+  if (yMin === Infinity) { yMin = 0; yMax = 1; }
+  if (yMin > 0) yMin = 0;
+  if (yMax === yMin) yMax = yMin + 1;
+
+  const W = 700, H = 280, padL = 50, padR = 10, padT = 10, padB = 30;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const n = historyData.length;
+  const xScale = (i) => padL + (n <= 1 ? plotW / 2 : (i / (n - 1)) * plotW);
+  const yScale = (v) => padT + plotH - ((v - yMin) / (yMax - yMin)) * plotH;
+
+  // Y 轴刻度（4 格）
+  const yTicks = [];
+  for (let i = 0; i <= 4; i++) {
+    const v = yMin + (yMax - yMin) * i / 4;
+    yTicks.push({ v, y: yScale(v) });
+  }
+
+  // X 轴刻度（最多 8 个）
+  const xStep = Math.max(1, Math.floor(n / 8));
+  const xTicks = [];
+  for (let i = 0; i < n; i += xStep) {
+    xTicks.push({ i, label: historyData[i].round, x: xScale(i) });
+  }
+
+  // 构建 SVG
+  let svg = `<svg width="${W}" height="${H}" style="background:#fafafa; font-family:monospace; font-size:10px;">`;
+
+  // Y 网格 + 刻度
+  for (const t of yTicks) {
+    svg += `<line x1="${padL}" y1="${t.y}" x2="${W - padR}" y2="${t.y}" stroke="#eee" stroke-width="1"/>`;
+    svg += `<text x="${padL - 4}" y="${t.y + 3}" text-anchor="end" fill="#666">${Math.round(t.v)}</text>`;
+  }
+
+  // X 刻度
+  for (const t of xTicks) {
+    svg += `<line x1="${t.x}" y1="${padT + plotH}" x2="${t.x}" y2="${padT + plotH + 4}" stroke="#999"/>`;
+    svg += `<text x="${t.x}" y="${padT + plotH + 16}" text-anchor="middle" fill="#666">${t.label}</text>`;
+  }
+  svg += `<text x="${W / 2}" y="${H - 2}" text-anchor="middle" fill="#666">回合</text>`;
+
+  // 曲线
+  for (const s of series) {
+    let path = "";
+    s.data.forEach((v, i) => {
+      const x = xScale(i), y = yScale(v);
+      path += (i === 0 ? "M" : " L") + x + "," + y;
+    });
+    const dash = s.dashed ? ' stroke-dasharray="4,2"' : '';
+    svg += `<path d="${path}" fill="none" stroke="${s.color}" stroke-width="1.8"${dash}/>`;
+  }
+
+  // 图例
+  let lx = padL, ly = padT + 2;
+  for (const s of series) {
+    const dash = s.dashed ? ' stroke-dasharray="4,2"' : '';
+    svg += `<line x1="${lx}" y1="${ly + 4}" x2="${lx + 16}" y2="${ly + 4}" stroke="${s.color}" stroke-width="2"${dash}/>`;
+    svg += `<text x="${lx + 20}" y="${ly + 8}" fill="${s.color}">${s.name}</text>`;
+    lx += s.name.length * 8 + 50;
+    if (lx > W - 80) { lx = padL; ly += 14; }
+  }
+
+  svg += "</svg>";
+  box.innerHTML = svg;
+}
+
+async function clearHistory() {
+  if (!confirm("确定清空所有历史数据？")) return;
+  try {
+    await fetch('/clear-history', { method: 'POST' });
+    historyData = [];
+    renderHistoryChart();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+// ===================== 扇形图（用后端 summary.groups）=====================
+function renderPieChart() {
+  const box = document.getElementById("pieChart");
+  if (!box) return;
+  const groups = lastSummary.groups || {};
+  const entries = Object.entries(groups).sort((a, b) => b[1] - a[1]);
+  const total = entries.reduce((s, e) => s + e[1], 0);
+  if (total === 0) { box.innerHTML = "<i>无个体</i>"; return; }
+  const colors = ["#3498db", "#e74c3c", "#2ecc71", "#f39c12", "#9b59b6", "#1abc9c", "#e67e22", "#34495e"];
+  const cx = 80, cy = 80, r = 65;
+  let startAngle = -Math.PI / 2;
+  let paths = "", legend = "";
+  entries.forEach((e, i) => {
+    const [name, count] = e;
+    const pct = count / total;
+    const endAngle = startAngle + pct * Math.PI * 2;
+    const x1 = cx + r * Math.cos(startAngle);
+    const y1 = cy + r * Math.sin(startAngle);
+    const x2 = cx + r * Math.cos(endAngle);
+    const y2 = cy + r * Math.sin(endAngle);
+    const large = (endAngle - startAngle) > Math.PI ? 1 : 0;
+    const color = colors[i % colors.length];
+    if (pct >= 1) {
+      paths += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${color}" stroke="#fff" stroke-width="1"/>`;
+    } else {
+      paths += `<path d="M${cx},${cy} L${x1},${y1} A${r},${r} 0 ${large} 1 ${x2},${y2} Z" fill="${color}" stroke="#fff" stroke-width="1"/>`;
+    }
+    legend += `<div style="display:flex;align-items:center;margin:2px 0;">
+      <span style="display:inline-block;width:12px;height:12px;background:${color};margin-right:6px;border-radius:2px;"></span>
+      <span style="font-size:13px;">${name}：${count}（${(pct * 100).toFixed(0)}%）</span>
+    </div>`;
+    startAngle = endAngle;
+  });
+  box.innerHTML = `
+    <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+      <svg width="160" height="160" viewBox="0 0 160 160">${paths}<text x="${cx}" y="${cy + 5}" text-anchor="middle" font-size="16" font-weight="bold" fill="#333">${total}</text></svg>
+      <div style="flex:1;min-width:120px;">${legend}</div>
+    </div>
+  `;
+}
+
+// ===================== 基础设置渲染 =====================
+function renderDefaults() {
+  // 默认代谢 / 收入 / 繁殖输入框预填
+  document.getElementById("dMetaRes").value = defaultSettings.metabolism.res;
+  document.getElementById("dMetaAmt").value = defaultSettings.metabolism.amount;
+  document.getElementById("dIncRes").value = defaultSettings.income.res;
+  document.getElementById("dIncAmt").value = defaultSettings.income.amount;
+  const reproEnable = defaultSettings.canReproduce !== false;
+  document.getElementById("dReproEnable").checked = reproEnable;
+  document.getElementById("reproParams").style.display = reproEnable ? "" : "none";
+  document.getElementById("dReproTh").value = defaultSettings.reproThresholdMult ?? 2.0;
+  document.getElementById("dReproInherit").value = defaultSettings.reproInheritMult ?? 1.0;
+  renderDefaultAttrs();
+  renderDefaultNeeds();
+  renderDefaultRules();
+}
+
+function renderDefaultAttrs() {
+  const box = document.getElementById("defaultAttrs");
+  const keys = Object.keys(defaultSettings.attrs);
+  if (keys.length === 0) { box.innerHTML = "<i>无</i>"; return; }
+  let html = "<table><tr><th>属性</th><th>数值</th><th>操作</th></tr>";
+  keys.forEach(k => {
+    html += `<tr><td>${k}</td>` +
+            `<td><input type="number" value="${defaultSettings.attrs[k]}" onchange="updateDefaultAttr('${k}', this.value)"></td>` +
+            `<td><button class="btn-del" onclick="deleteDefaultAttr('${k}')">删除</button></td></tr>`;
+  });
+  html += "</table>";
+  box.innerHTML = html;
+}
+
+function renderDefaultNeeds() {
+  const box = document.getElementById("defaultNeeds");
+  if (defaultSettings.needs.length === 0) { box.innerHTML = "<i>无</i>"; return; }
+  let html = "<table><tr><th>资源</th><th>数量</th><th>操作</th></tr>";
+  defaultSettings.needs.forEach((n, i) => {
+    html += `<tr><td><input value="${n.key}" onchange="updateDefaultNeed(${i},'key',this.value)"></td>` +
+            `<td><input type="number" value="${n.amount}" onchange="updateDefaultNeed(${i},'amount',this.value)"></td>` +
+            `<td><button class="btn-del" onclick="deleteDefaultNeed(${i})">删除</button></td></tr>`;
+  });
+  html += "</table>";
+  box.innerHTML = html;
+}
+
+function renderDefaultRules() {
+  const box = document.getElementById("defaultRules");
+  if (defaultSettings.rules.length === 0) { box.innerHTML = "<i>无</i>"; return; }
+  let html = "<table><tr><th>出售资源</th><th>接收资源</th><th>单价(1卖=?收)</th><th>操作</th></tr>";
+  defaultSettings.rules.forEach((r, i) => {
+    html += `<tr><td><input value="${r.sell}" onchange="updateDefaultRule(${i},'sell',this.value)"></td>` +
+            `<td><input value="${r.buy}"  onchange="updateDefaultRule(${i},'buy',this.value)"></td>` +
+            `<td><input type="number" step="0.01" value="${r.rate}" onchange="updateDefaultRule(${i},'rate',this.value)"></td>` +
+            `<td><button class="btn-del" onclick="deleteDefaultRule(${i})">删除</button></td></tr>`;
+  });
+  html += "</table>";
+  box.innerHTML = html;
+}
+
+// 基础设置编辑（onchange 即时修改本地 + PUT 推送）
+function updateDefaultMeta() {
+  const res = document.getElementById("dMetaRes").value.trim() || "食物";
+  const amt = parseFloat(document.getElementById("dMetaAmt").value);
+  if (isNaN(amt) || amt < 0) { alert("代谢数量必须 ≥0"); return; }
+  defaultSettings.metabolism = { res, amount: amt };
+  putDefaults();
+}
+function updateDefaultInc() {
+  const res = document.getElementById("dIncRes").value.trim() || "钱";
+  const amt = parseFloat(document.getElementById("dIncAmt").value);
+  if (isNaN(amt) || amt < 0) { alert("收入数量必须 ≥0"); return; }
+  defaultSettings.income = { res, amount: amt };
+  putDefaults();
+}
+function toggleReproParams() {
+  const checked = document.getElementById("dReproEnable").checked;
+  document.getElementById("reproParams").style.display = checked ? "" : "none";
+  defaultSettings.canReproduce = checked;
+  putDefaults();
+}
+function updateDefaultRepro() {
+  const th = parseFloat(document.getElementById("dReproTh").value);
+  const inherit = parseFloat(document.getElementById("dReproInherit").value);
+  if (isNaN(th) || th < 0.5) { alert("阈值倍数必须 ≥0.5"); return; }
+  if (isNaN(inherit) || inherit < 0.1) { alert("继承倍数必须 ≥0.1"); return; }
+  defaultSettings.reproThresholdMult = th;
+  defaultSettings.reproInheritMult = inherit;
+  putDefaults();
+}
+function updateDefaultAttr(k, v) { defaultSettings.attrs[k] = parseFloat(v) || 0; putDefaults(); }
+function deleteDefaultAttr(k) { delete defaultSettings.attrs[k]; renderDefaultAttrs(); putDefaults(); }
+function addDefaultAttr() {
+  const k = document.getElementById("dAttrKey").value.trim();
+  const v = parseFloat(document.getElementById("dAttrVal").value);
+  if (!k || isNaN(v)) { alert("请填写属性名和数值"); return; }
+  defaultSettings.attrs[k] = v;
+  document.getElementById("dAttrKey").value = "";
+  document.getElementById("dAttrVal").value = "";
+  renderDefaultAttrs();
+  putDefaults();
+}
+function updateDefaultNeed(i, field, v) {
+  if (field === "amount") defaultSettings.needs[i].amount = parseFloat(v) || 0;
+  else defaultSettings.needs[i].key = v.trim();
+  putDefaults();
+}
+function deleteDefaultNeed(i) { defaultSettings.needs.splice(i, 1); renderDefaultNeeds(); putDefaults(); }
+function addDefaultNeed() {
+  const k = document.getElementById("dNeedKey").value.trim();
+  const v = parseFloat(document.getElementById("dNeedVal").value);
+  if (!k || isNaN(v)) { alert("请填写资源名和数量"); return; }
+  defaultSettings.needs.push({ key: k, amount: v });
+  document.getElementById("dNeedKey").value = "";
+  document.getElementById("dNeedVal").value = "";
+  renderDefaultNeeds();
+  putDefaults();
+}
+function updateDefaultRule(i, field, v) {
+  if (field === "rate") defaultSettings.rules[i].rate = parseFloat(v) || 0;
+  else defaultSettings.rules[i][field] = v.trim();
+  putDefaults();
+}
+function deleteDefaultRule(i) { defaultSettings.rules.splice(i, 1); renderDefaultRules(); putDefaults(); }
+function addDefaultRule() {
+  const f = document.getElementById("dFrom").value.trim();
+  const t = document.getElementById("dTo").value.trim();
+  const r = parseFloat(document.getElementById("dRate").value);
+  if (!f || !t || isNaN(r)) { alert("请填写完整挂牌"); return; }
+  defaultSettings.rules.push({ sell: f, buy: t, rate: r });
+  document.getElementById("dFrom").value = "";
+  document.getElementById("dTo").value = "";
+  document.getElementById("dRate").value = "";
+  renderDefaultRules();
+  putDefaults();
+}
+
+async function putDefaults() {
+  try { await api("PUT", "/defaults", defaultSettings); }
+  catch (e) { console.error("推送基础设置失败：", e.message); }
+}
+
+// ===================== 个体列表 =====================
+function getFilteredPersons() {
+  let arr = persons;
+  if (listTypeFilter) {
+    arr = arr.filter(p => getBaseName(p.name) === listTypeFilter);
+  }
+  if (listFilter) {
+    const kw = listFilter.toLowerCase();
+    arr = arr.filter(p => p.name.toLowerCase().includes(kw) || String(p.id).includes(kw));
+  }
+  return arr;
+}
+
+function syncTypeOptions() {
+  const sel = document.getElementById("listType");
+  const types = new Set(persons.map(p => getBaseName(p.name)));
+  const current = sel.value;
+  const opts = ['<option value="">全部类型</option>'];
+  for (const t of [...types].sort()) {
+    opts.push(`<option value="${t}">${t}</option>`);
+  }
+  const newHtml = opts.join("");
+  if (sel.innerHTML !== newHtml) {
+    sel.innerHTML = newHtml;
+    if ([...types].includes(current)) sel.value = current;
+    else { sel.value = ""; listTypeFilter = ""; }
+  }
+}
+
+function renderPersonList() {
+  const box = document.getElementById("personList");
+  const controls = document.getElementById("listControls");
+  if (persons.length === 0) {
+    box.innerHTML = "<i>无个体，请先创建</i>";
+    controls.style.display = "none";
+    renderPieChart();
+    return;
+  }
+  controls.style.display = "flex";
+
+  syncTypeOptions();
+
+  const filtered = getFilteredPersons();
+  const totalPages = Math.max(1, Math.ceil(filtered.length / listPageSize));
+  if (listPage > totalPages) listPage = totalPages;
+  if (listPage < 1) listPage = 1;
+
+  const start = (listPage - 1) * listPageSize;
+  const pageItems = filtered.slice(start, start + listPageSize);
+
+  let html = "";
+  if (pageItems.length === 0) {
+    html = "<i>当前筛选无结果</i>";
+  } else {
+    pageItems.forEach(p => {
+      const cls = p.id === selectedId ? "person-item active" : "person-item";
+      html += `<span class="${cls}" onclick="selectPerson(${p.id})">${p.name}` +
+              ` <button class="btn-del" onclick="event.stopPropagation();delPerson(${p.id})">删除</button></span>`;
+    });
+  }
+  box.innerHTML = html;
+
+  document.getElementById("pageInfo").textContent = `${listPage}/${totalPages} (共 ${filtered.length})`;
+  document.getElementById("prevBtn").disabled = listPage <= 1;
+  document.getElementById("nextBtn").disabled = listPage >= totalPages;
+
+  renderPieChart();
+}
+
+function onSearchInput() {
+  clearTimeout(_searchDebounce);
+  _searchDebounce = setTimeout(() => {
+    listFilter = document.getElementById("listSearch").value.trim();
+    listPage = 1;
+    renderPersonList();
+  }, 200);
+}
+
+function onListFilterChange() {
+  listTypeFilter = document.getElementById("listType").value;
+  listPage = 1;
+  renderPersonList();
+}
+
+function onPageSizeChange() {
+  listPageSize = parseInt(document.getElementById("pageSize").value);
+  listPage = 1;
+  renderPersonList();
+}
+
+function prevPage() {
+  if (listPage > 1) { listPage--; renderPersonList(); }
+}
+
+function nextPage() {
+  const filtered = getFilteredPersons();
+  const totalPages = Math.max(1, Math.ceil(filtered.length / listPageSize));
+  if (listPage < totalPages) { listPage++; renderPersonList(); }
+}
+
+function selectPerson(id) {
+  selectedId = id;
+  renderPersonList();
+  renderDetail();
+}
+
+// ===================== 个体详情 =====================
+function renderDetail() {
+  const panel = document.getElementById("detailPanel");
+  const p = persons.find(x => x.id === selectedId);
+  if (!p) { panel.style.display = "none"; return; }
+  panel.style.display = "block";
+
+  const parent = p.parentId ? persons.find(x => x.id === p.parentId) : null;
+  const parentLabel = p.parentId
+    ? `母体：${parent ? parent.name : '已死亡'}`
+    : '（无母体，原始个体）';
+
+  let html = `<div class="row" style="margin-bottom:8px; align-items:center;">
+    <b>当前个体名字：</b>
+    <input value="${p.name}" onchange="updatePersonName(${p.id}, this.value)" style="min-width:140px; flex:0 0 auto;">
+    <span class="small">${parentLabel}</span>
+  </div>`;
+
+  // 基础代谢
+  html += `<div class="row" style="margin-bottom:8px; align-items:center;">
+    <b>基础代谢：</b>
+    <input value="${p.metabolism.res}" onchange="updatePersonMetabolism(${p.id}, 'res', this.value)" placeholder="如 食物" style="min-width:140px; flex:0 0 auto;">
+    <span class="small">资源名</span>
+    <input type="number" step="0.5" min="0" value="${p.metabolism.amount}" onchange="updatePersonMetabolism(${p.id}, 'amount', this.value)" style="width:80px; flex:0 0 auto;">
+    <span class="small">每回合扣减量（≥0）</span>
+  </div>`;
+
+  // 基础收入
+  html += `<div class="row" style="margin-bottom:8px; align-items:center;">
+    <b>基础收入：</b>
+    <input value="${p.income.res}" onchange="updatePersonIncome(${p.id}, 'res', this.value)" placeholder="如 钱" style="min-width:140px; flex:0 0 auto;">
+    <span class="small">资源名</span>
+    <input type="number" step="0.5" min="0" value="${p.income.amount}" onchange="updatePersonIncome(${p.id}, 'amount', this.value)" style="width:80px; flex:0 0 auto;">
+    <span class="small">每回合增加量（≥0）</span>
+  </div>`;
+
+  // 是否允许繁殖
+  const canRep = p.canReproduce !== false;
+  const reproTh = p.reproThresholdMult ?? 2.0;
+  const reproInh = p.reproInheritMult ?? 1.0;
+  html += `<div class="row" style="margin-bottom:8px; align-items:center;">
+    <b>允许繁殖：</b>
+    <input type="checkbox" ${canRep ? 'checked' : ''} onchange="updatePersonCanReproduce(${p.id}, this.checked)" style="width:20px; height:20px; flex:0 0 auto;">
+    <span class="small">${canRep ? '✓ 已启用' : '✗ 已禁用'}</span>
+  </div>`;
+  if (canRep) {
+    html += `<div class="row" style="margin-bottom:8px; margin-left:20px; align-items:center;">
+      <label style="font-size:13px; white-space:nowrap;">代谢资源 &gt; <input type="number" step="0.1" min="0.5" value="${reproTh}" onchange="updatePersonRepro(${p.id}, 'threshold', this.value)" style="width:60px;"> × 代谢值 → 繁殖</label>
+    </div>`;
+    html += `<div class="row" style="margin-bottom:8px; margin-left:20px; align-items:center;">
+      <label style="font-size:13px; white-space:nowrap;">子代继承 <input type="number" step="0.1" min="0.1" value="${reproInh}" onchange="updatePersonRepro(${p.id}, 'inherit', this.value)" style="width:60px;"> × 代谢值</label>
+    </div>`;
+  }
+
+  // 属性
+  html += "<h3>属性</h3>";
+  const keys = Object.keys(p.attrs);
+  if (keys.length === 0) html += "<i>无</i>";
+  else {
+    html += "<table><tr><th>属性</th><th>数值</th><th>操作</th></tr>";
+    keys.forEach(k => {
+      html += `<tr><td>${k}</td>` +
+              `<td><input type="number" value="${p.attrs[k]}" onchange="updatePersonAttr(${p.id},'${k}',this.value)"></td>` +
+              `<td><button class="btn-del" onclick="deletePersonAttr(${p.id},'${k}')">删除</button></td></tr>`;
+    });
+    html += "</table>";
+  }
+  html += `<div class="row" style="margin-top:6px;">
+    <input id="pAttrKey_${p.id}" placeholder="属性名">
+    <input id="pAttrVal_${p.id}" type="number" placeholder="数值">
+    <button class="btn-add" onclick="addPersonAttr(${p.id})">添加</button>
+  </div>`;
+
+  // 需求
+  html += "<h3>需求</h3>";
+  if (p.needs.length === 0) html += "<i>无</i>";
+  else {
+    html += "<table><tr><th>资源</th><th>数量</th><th>操作</th></tr>";
+    p.needs.forEach((n, i) => {
+      html += `<tr><td><input value="${n.key}" onchange="updatePersonNeed(${p.id},${i},'key',this.value)"></td>` +
+              `<td><input type="number" value="${n.amount}" onchange="updatePersonNeed(${p.id},${i},'amount',this.value)"></td>` +
+              `<td><button class="btn-del" onclick="delPersonNeed(${p.id},${i})">删除</button></td></tr>`;
+    });
+    html += "</table>";
+  }
+  html += `<div class="row" style="margin-top:6px;">
+    <input id="pNeedKey_${p.id}" placeholder="资源名">
+    <input id="pNeedVal_${p.id}" type="number" placeholder="数量">
+    <button class="btn-add" onclick="addPersonNeed(${p.id})">添加</button>
+  </div>`;
+
+  // 规则
+  html += "<h3>挂牌规则（出售 1 单位资源 = 单价 × 接收资源；价低优先成交）</h3>";
+  if (p.rules.length === 0) html += "<i>无</i>";
+  else {
+    html += "<table><tr><th>出售资源</th><th>接收资源</th><th>单价(1卖=?收)</th><th>操作</th></tr>";
+    p.rules.forEach((r, i) => {
+      html += `<tr><td><input value="${r.sell}" onchange="updatePersonRule(${p.id},${i},'sell',this.value)"></td>` +
+              `<td><input value="${r.buy}"  onchange="updatePersonRule(${p.id},${i},'buy',this.value)"></td>` +
+              `<td><input type="number" step="0.01" value="${r.rate}" onchange="updatePersonRule(${p.id},${i},'rate',this.value)"></td>` +
+              `<td><button class="btn-del" onclick="delPersonRule(${p.id},${i})">删除</button></td></tr>`;
+    });
+    html += "</table>";
+  }
+  html += `<div class="row" style="margin-top:6px;">
+    <input id="pFrom_${p.id}" placeholder="出售资源(如food)">
+    <input id="pTo_${p.id}" placeholder="接收资源(如money)">
+    <input id="pRate_${p.id}" type="number" step="0.01" placeholder="单价(1卖=?收)">
+    <button class="btn-add" onclick="addPersonRule(${p.id})">添加</button>
+  </div>`;
+
+  document.getElementById("detailContent").innerHTML = html;
+}
+
+// 个体属性编辑（修改本地缓存 + PUT 推送）
+function updatePersonName(id, v) {
+  const p = persons.find(x => x.id === id);
+  const trimmed = v.trim();
+  if (!trimmed) { alert("个体名字不能为空，已恢复原值"); renderDetail(); return; }
+  p.name = trimmed;
+  renderPersonList();
+  putPerson(p);
+}
+function updatePersonMetabolism(id, field, v) {
+  const p = persons.find(x => x.id === id);
+  if (field === "res") {
+    const trimmed = String(v).trim();
+    if (!trimmed) { alert("代谢资源名不能为空，已恢复原值"); renderDetail(); return; }
+    p.metabolism.res = trimmed;
+  } else {
+    const num = Number(v);
+    if (isNaN(num) || num < 0) { alert("代谢数量必须为 ≥0 的数字，已恢复原值"); renderDetail(); return; }
+    p.metabolism.amount = num;
+  }
+  putPerson(p);
+}
+function updatePersonIncome(id, field, v) {
+  const p = persons.find(x => x.id === id);
+  if (field === "res") {
+    const trimmed = String(v).trim();
+    if (!trimmed) { alert("收入资源名不能为空，已恢复原值"); renderDetail(); return; }
+    p.income.res = trimmed;
+  } else {
+    const num = Number(v);
+    if (isNaN(num) || num < 0) { alert("收入数量必须为 ≥0 的数字，已恢复原值"); renderDetail(); return; }
+    p.income.amount = num;
+  }
+  putPerson(p);
+}
+function updatePersonCanReproduce(id, v) {
+  const p = persons.find(x => x.id === id);
+  if (!p) return;
+  p.canReproduce = !!v;
+  renderDetail();
+  putPerson(p);
+}
+function updatePersonRepro(id, field, v) {
+  const p = persons.find(x => x.id === id);
+  if (!p) return;
+  const num = parseFloat(v);
+  if (field === 'threshold') {
+    if (isNaN(num) || num < 0.5) { alert("阈值倍数必须 ≥0.5"); return; }
+    p.reproThresholdMult = num;
+  } else {
+    if (isNaN(num) || num < 0.1) { alert("继承倍数必须 ≥0.1"); return; }
+    p.reproInheritMult = num;
+  }
+  putPerson(p);
+}
+function updatePersonAttr(id, k, v) {
+  const p = persons.find(x => x.id === id);
+  p.attrs[k] = parseFloat(v) || 0;
+  putPerson(p);
+}
+function deletePersonAttr(id, k) {
+  const p = persons.find(x => x.id === id);
+  delete p.attrs[k];
+  renderDetail();
+  putPerson(p);
+}
+function addPersonAttr(id) {
+  const p = persons.find(x => x.id === id);
+  const k = document.getElementById(`pAttrKey_${id}`).value.trim();
+  const v = parseFloat(document.getElementById(`pAttrVal_${id}`).value);
+  if (!k || isNaN(v)) { alert("请填写属性名和数值"); return; }
+  p.attrs[k] = v;
+  renderDetail();
+  putPerson(p);
+}
+function updatePersonNeed(id, i, field, v) {
+  const p = persons.find(x => x.id === id);
+  if (field === "amount") p.needs[i].amount = parseFloat(v) || 0;
+  else p.needs[i].key = v.trim();
+  putPerson(p);
+}
+function delPersonNeed(id, i) {
+  const p = persons.find(x => x.id === id);
+  p.needs.splice(i, 1);
+  renderDetail();
+  putPerson(p);
+}
+function addPersonNeed(id) {
+  const p = persons.find(x => x.id === id);
+  const k = document.getElementById(`pNeedKey_${id}`).value.trim();
+  const v = parseFloat(document.getElementById(`pNeedVal_${id}`).value);
+  if (!k || isNaN(v)) { alert("请填写资源名和数量"); return; }
+  p.needs.push({ key: k, amount: v });
+  renderDetail();
+  putPerson(p);
+}
+function updatePersonRule(id, i, field, v) {
+  const p = persons.find(x => x.id === id);
+  if (field === "rate") p.rules[i].rate = parseFloat(v) || 0;
+  else p.rules[i][field] = v.trim();
+  putPerson(p);
+}
+function delPersonRule(id, i) {
+  const p = persons.find(x => x.id === id);
+  p.rules.splice(i, 1);
+  renderDetail();
+  putPerson(p);
+}
+function addPersonRule(id) {
+  const p = persons.find(x => x.id === id);
+  const f = document.getElementById(`pFrom_${id}`).value.trim();
+  const t = document.getElementById(`pTo_${id}`).value.trim();
+  const r = parseFloat(document.getElementById(`pRate_${id}`).value);
+  if (!f || !t || isNaN(r)) { alert("请填写完整挂牌"); return; }
+  p.rules.push({ sell: f, buy: t, rate: r });
+  renderDetail();
+  putPerson(p);
+}
+
+async function putPerson(p) {
+  try { await api("PUT", `/person/${p.id}`, p); }
+  catch (e) { console.error("推送个体失败：", e.message); }
+}
+
+// ===================== 个体增删 =====================
+async function addPerson() {
+  const name = document.getElementById("newPersonName").value.trim() || null;
+  try {
+    const path = name ? `/person?name=${encodeURIComponent(name)}` : "/person";
+    const r = await api("POST", path);
+    persons.push(normalizePerson(r.person));
+    document.getElementById("newPersonName").value = "";
+    renderPersonList();
+  } catch (e) { alert("创建失败：" + e.message); }
+}
+
+async function delPerson(id) {
+  try {
+    await api("DELETE", `/person/${id}`);
+    persons = persons.filter(p => p.id !== id);
+    if (selectedId === id) {
+      selectedId = null;
+      document.getElementById("detailPanel").style.display = "none";
+    }
+    renderPersonList();
+  } catch (e) { alert("删除失败：" + e.message); }
+}
+
+// ===================== 配置导入/导出 =====================
+function exportConfig() {
+  if (persons.length === 0) { alert("当前没有个体，无内容可导出"); return; }
+  window.location.href = "/export-persons";
+}
+
+async function importConfig(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const data = JSON.parse(text);
+    // 推送整个文件对象到后端
+    const r = await api("POST", "/import-persons", data);
+    // 拉取最新状态
+    await loadState();
+    alert("个体配置导入成功（个体数：" + r.count + "），基础设置未受影响");
+  } catch (err) {
+    alert("导入失败：" + err.message);
+  }
+  event.target.value = "";
+}
+
+function exportDefaults() {
+  window.location.href = "/export-defaults";
+}
+
+async function importDefaults(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const data = JSON.parse(text);
+    const src = data.defaultSettings || data;
+    await api("POST", "/import-defaults", data);
+    defaultSettings = normalizeDefaults(src);
+    renderDefaults();
+    alert("基础设置导入成功");
+  } catch (err) {
+    alert("导入失败：" + err.message);
+  }
+  event.target.value = "";
+}
+
+// ===================== 操作互斥锁（防止连点导致数据竞态）=====================
+let _busy = false;
+function _setBusy(b) {
+  _busy = b;
+  document.querySelectorAll('button[data-lock]').forEach(btn => btn.disabled = b);
+}
+
+async function importFromConfigFolder() {
+  if (_busy) return;
+  _setBusy(true);
+  try {
+    const r = await api("POST", "/load-config-folder");
+    defaultSettings = normalizeDefaults(r.defaults);
+    persons = r.persons.map(normalizePerson);
+    round = r.summary.round;
+    lastSummary = r.summary;
+    selectedId = null;
+    document.getElementById("detailPanel").style.display = "none";
+    document.getElementById("roundNum").textContent = round;
+    document.getElementById("log").textContent = r.log;
+    renderAll();
+    alert("一键导入 config 完成");
+  } catch (e) {
+    alert("一键导入失败：" + e.message);
+  } finally {
+    _setBusy(false);
+  }
+}
+
+// ===================== 回合 / 交换计算 =====================
+async function nextRound() {
+  if (_busy) return;
+  if (persons.length === 0) { alert("请先创建个体"); return; }
+  _setBusy(true);
+  try {
+    const r = await api("POST", "/next-round");
+    persons = r.persons.map(normalizePerson);
+    round = r.summary.round;
+    lastSummary = r.summary;
+    document.getElementById("roundNum").textContent = round;
+    document.getElementById("log").textContent = r.log;
+    renderPersonList();
+    if (selectedId !== null) renderDetail();
+    _refreshHistoryIfVisible();
+  } catch (e) { alert("下一回合失败：" + e.message); }
+  finally { _setBusy(false); }
+}
+
+async function calculate() {
+  if (_busy) return;
+  if (persons.length === 0) { alert("请先创建个体"); return; }
+  _setBusy(true);
+  try {
+    const r = await api("POST", "/calculate");
+    persons = r.persons.map(normalizePerson);
+    lastSummary = r.summary;
+    document.getElementById("log").textContent = r.log;
+    renderPersonList();
+    if (selectedId !== null) renderDetail();
+  } catch (e) { alert("交换计算失败：" + e.message); }
+  finally { _setBusy(false); }
+}
+
+async function nextRoundAndCalculate() {
+  if (_busy) return;
+  if (persons.length === 0) { alert("请先创建个体"); return; }
+  _setBusy(true);
+  try {
+    const r = await api("POST", "/next-and-calc");
+    persons = r.persons.map(normalizePerson);
+    round = r.summary.round;
+    lastSummary = r.summary;
+    document.getElementById("roundNum").textContent = round;
+    document.getElementById("log").textContent = r.log;
+    renderPersonList();
+    if (selectedId !== null) renderDetail();
+    _refreshHistoryIfVisible();
+  } catch (e) { alert("操作失败：" + e.message); }
+  finally { _setBusy(false); }
+}
+
+async function resetRound() {
+  if (_busy) return;
+  if (!confirm("确定要重置回合吗？\n\n回合数将归零，并从 config 文件夹重新加载基础设置和个体列表。\n\n⚠️ 当前所有修改都会被覆盖。")) return;
+  _setBusy(true);
+  try {
+    const r = await api("POST", "/reset");
+    defaultSettings = normalizeDefaults(r.defaults);
+    persons = r.persons.map(normalizePerson);
+    round = r.summary.round;
+    lastSummary = r.summary;
+    selectedId = null;
+    document.getElementById("detailPanel").style.display = "none";
+    document.getElementById("roundNum").textContent = round;
+    document.getElementById("log").textContent = r.log;
+    renderAll();
+    _refreshHistoryIfVisible();
+  } catch (e) { alert("重置失败：" + e.message); }
+  finally { _setBusy(false); }
+}
+
+// ===================== 操作后自动刷新历史曲线 =====================
+function _refreshHistoryIfVisible() {
+  const wrap = document.getElementById("historyChartWrap");
+  if (wrap && wrap.style.display !== "none") {
+    fetchHistoryAndRender();
+  }
+}
+
+// ===================== 渲染入口 =====================
+function renderAll() {
+  renderDefaults();
+  renderPersonList();
+  if (selectedId !== null) renderDetail();
+}
+
+// ===================== 启动：拉取后端状态 =====================
+async function loadState() {
+  const s = await api("GET", "/state");
+  defaultSettings = normalizeDefaults(s.defaults);
+  persons = s.persons.map(normalizePerson);
+  round = s.round;
+  lastSummary = s.summary;
+  document.getElementById("roundNum").textContent = round;
+  renderAll();
+}
+
+// 启动时自动加载后端状态
+(async () => {
+  try {
+    await loadState();
+    document.getElementById("log").textContent = "已加载后端状态：个体数 " + persons.length + "，回合 " + round;
+  } catch (e) {
+    document.getElementById("log").textContent = "加载后端状态失败：" + e.message + "\n请先启动 app.py（python app.py）";
+  }
+})();
+</script>
+
+</body>
+</html>

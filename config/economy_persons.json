@@ -1,0 +1,106 @@
+{
+  "type": "economy-persons",
+  "version": 1,
+  "persons": [
+    {
+      "id": 4,
+      "parentId": null,
+      "name": "劳务公司",
+      "metabolism": {
+        "res": "食物",
+        "amount": 5.0
+      },
+      "income": {
+        "res": "劳动力",
+        "amount": 10.0
+      },
+      "canReproduce": true,
+      "reproThresholdMult": 12.0,
+      "reproInheritMult": 3.0,
+      "attrs": {
+        "食物": 50.0,
+        "劳动力": 10.0
+      },
+      "needs": [
+        {
+          "key": "食物",
+          "amount": 10.0
+        }
+      ],
+      "rules": [
+        {
+          "sell": "劳动力",
+          "buy": "钱",
+          "rate": 2.0
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "parentId": null,
+      "name": "食品公司",
+      "metabolism": {
+        "res": "钱",
+        "amount": 10.0
+      },
+      "income": {
+        "res": "食物",
+        "amount": 20.0
+      },
+      "canReproduce": true,
+      "reproThresholdMult": 2.0,
+      "reproInheritMult": 1.0,
+      "attrs": {
+        "钱": 100.0,
+        "食物": 20.0
+      },
+      "needs": [
+        {
+          "key": "钱",
+          "amount": 20.0
+        }
+      ],
+      "rules": [
+        {
+          "sell": "食物",
+          "buy": "钱",
+          "rate": 1.0
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "parentId": null,
+      "name": "科技公司",
+      "metabolism": {
+        "res": "劳动力",
+        "amount": 10.0
+      },
+      "income": {
+        "res": "钱",
+        "amount": 100.0
+      },
+      "canReproduce": true,
+      "reproThresholdMult": 100.0,
+      "reproInheritMult": 1.0,
+      "attrs": {
+        "钱": 100.0,
+        "劳动力": 100.0
+      },
+      "needs": [
+        {
+          "key": "劳动力",
+          "amount": 999.0
+        }
+      ],
+      "rules": [
+        {
+          "sell": "钱",
+          "buy": "劳动力",
+          "rate": 1.0
+        }
+      ]
+    }
+  ],
+  "exportedAt": "2026-09-04T15:28:16.136493+00:00"
+}

@@ -1,0 +1,33 @@
+{
+  "type": "economy-defaults",
+  "version": 1,
+  "defaultSettings": {
+    "metabolism": {
+      "res": "食物",
+      "amount": 1.0
+    },
+    "income": {
+      "res": "钱",
+      "amount": 1.0
+    },
+    "canReproduce": true,
+    "reproThresholdMult": 2.0,
+    "reproInheritMult": 1.0,
+    "attrs": {
+      "食物": 1.0,
+      "钱": 2.0
+    },
+    "needs": [
+      {
+        "key": "食物",
+        "amount": 2.0
+      },
+      {
+        "key": "钱",
+        "amount": 2.0
+      }
+    ],
+    "rules": []
+  },
+  "exportedAt": "2026-09-05T03:56:22.362699+00:00"
+}
