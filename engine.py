@@ -221,10 +221,12 @@ class Simulation:
 
     # ===================== 回合 5 步闭环 =====================
     def next_round(self, verbose: bool = False) -> str:
-        """推进 1 回合：代谢→收入→死亡→繁殖→抚养。
+        """推进 1 回合：清除易腐→收入→交换→代谢→死亡→繁殖→抚养。
 
-        verbose=False（默认）：输出汇总日志（人口变化 + 事件计数 + 资源总量变化），适合大 N。
-        verbose=True：输出每个体每步详细日志，调试用，N 大时慎用（O(N) 字符串）。
+        时序说明：先收入产出供给，再交换让个体获取代谢所需资源，最后代谢消耗。
+        这样以易腐资源（如劳动力）为代谢资源的个体，可通过当回合交换获得资源存活。
+        verbose=False（默认）：输出汇总日志，适合大 N。
+        verbose=True：输出每个体每步详细日志，调试用。
         """
         if not self.persons:
             raise ValueError("无个体")
@@ -261,7 +263,25 @@ class Simulation:
             elif cleared:
                 out.append("易腐资源已清除：" + "，".join(f"{res} {fmt_num(amt)}" for res, amt in cleared.items()))
 
-        # 1. 基础代谢：每个个体按自身 metabolism {res, amount} 扣减
+        # 1. 基础收入：先产出资源，为后续交换提供供给
+        earned = []
+        for p in self.persons:
+            inc = self._norm_person_income(p)
+            if inc.amount <= 0:
+                continue
+            before_v = float(p.attrs.get(inc.res, 0))
+            p.attrs[inc.res] = before_v + inc.amount
+            earned.append((p, inc.res, inc.amount, before_v, p.attrs[inc.res]))
+        if verbose and earned:
+            out.append("── 基础收入 ──")
+            for p, res, amt, b, a in earned:
+                out.append(f"  {p.name}：{res} {fmt_num(b)} → {fmt_num(a)}（+{fmt_num(amt)}）")
+
+        # 2. 交换计算：个体用本回合收入产出的资源交易，获取代谢所需
+        out.append("")
+        out.extend(self.calculate(verbose=verbose).split("\n"))
+
+        # 3. 基础代谢：每个个体按自身 metabolism {res, amount} 扣减（资源可能来自交换）
         consumed = []
         for p in self.persons:
             m = self._norm_person_metabolism(p)
@@ -274,22 +294,7 @@ class Simulation:
             for p, res, amt, b, a in consumed:
                 out.append(f"  {p.name}：{res} {fmt_num(b)} → {fmt_num(a)}（-{fmt_num(amt)}）")
 
-        # 2. 基础收入：与代谢对称
-        earned = []
-        for p in self.persons:
-            inc = self._norm_person_income(p)
-            if inc.amount <= 0:
-                continue
-            before_v = float(p.attrs.get(inc.res, 0))
-            p.attrs[inc.res] = before_v + inc.amount
-            earned.append((p, inc.res, inc.amount, before_v, p.attrs[inc.res]))
-        if verbose and earned:
-            out.append("")
-            out.append("── 基础收入 ──")
-            for p, res, amt, b, a in earned:
-                out.append(f"  {p.name}：{res} {fmt_num(b)} → {fmt_num(a)}（+{fmt_num(amt)}）")
-
-        # 3. 死亡检查：代谢资源 < 0 立即消灭（资源消失，无遗产）
+        # 4. 死亡检查：代谢资源 < 0 立即消灭（资源消失，无遗产）
         dead = [(p, res, a) for p, res, _amt, _b, a in consumed if float(a) < 0]
         n_dead = len(dead)
         if dead:
@@ -301,7 +306,7 @@ class Simulation:
             dead_ids = {p.id for p, _r, _a in dead}
             self.persons = [p for p in self.persons if p.id not in dead_ids]
 
-        # 4. 繁殖检查：代谢资源 > 2×代谢值 → 克隆子代
+        # 5. 繁殖检查：代谢资源 > 2×代谢值 → 克隆子代
         born = []
         reproducers = [p for p in self.persons if p.canReproduce]
         for p in reproducers:
@@ -340,7 +345,7 @@ class Simulation:
                     f"（母体-{fmt_num(cost)}{res}，子代+{fmt_num(inherit)}{res}）"
                 )
 
-        # 5. 抚养阶段：母体给每个子代转移代谢资源（量=子代代谢值）
+        # 6. 抚养阶段：母体给每个子代转移代谢资源（量=子代代谢值）
         transfers = []
         failures = []
         # 预建 parentId → children 索引（O(N)，避免每父一次全表扫描的 O(N²)）
@@ -653,11 +658,12 @@ class Simulation:
 
     # ===================== 合并操作 =====================
     def next_round_and_calculate(self, verbose: bool = False) -> str:
-        """下一回合 + 交换计算，基于回合后状态。返回合并日志。"""
-        round_log = self.next_round()
-        calc_log = self.calculate(verbose=verbose)
-        sep = "\n" + "═" * 40 + "\n"
-        return round_log + sep + calc_log
+        """下一回合（已内含交换计算）。
+
+        由于 next_round 已将交换纳入回合时序，本方法等价于调用 next_round，
+        保留接口仅为向后兼容。
+        """
+        return self.next_round(verbose=verbose)
 
     # ===================== 重置 =====================
     def reset_round(self, config_folder: str = "config") -> str:

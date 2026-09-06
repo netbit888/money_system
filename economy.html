@@ -179,10 +179,9 @@
 
 <div class="panel">
   <h2>四、回合</h2>
-  <div style="margin-bottom:8px;">当前回合：<b id="roundNum">0</b> &nbsp;|&nbsp; 每回合：基础代谢扣减（按各自代谢资源）+ 基础收入增加（按各自收入资源）+ 死亡/繁殖/抚养 + 交换计算</div>
-  <button class="btn-calc" data-lock="1" onclick="nextRound()">下一回合（代谢+收入+死亡/繁殖/抚养）</button>
-  <button class="btn-calc" data-lock="1" onclick="calculate()" style="background:#f0ad4e;">本回合交换计算</button>
-  <button class="btn-calc" data-lock="1" onclick="nextRoundAndCalculate()" style="background:#9b59b6;">下一回合并交换计算</button>
+  <div style="margin-bottom:8px;">当前回合：<b id="roundNum">0</b> &nbsp;|&nbsp; 每回合时序：清除易腐资源 → 收入 → 交换 → 代谢 → 死亡/繁殖/抚养</div>
+  <button class="btn-calc" data-lock="1" onclick="nextRound()">下一回合（含交换）</button>
+  <button class="btn-calc" data-lock="1" onclick="calculate()" style="background:#f0ad4e;">仅交换计算（不推进回合）</button>
   <button class="btn-del" data-lock="1" onclick="resetRound()" style="padding:6px 16px;">重置回合</button>
   <button class="btn-calc" onclick="toggleLog()" id="logToggleBtn" style="background:#6c757d; padding:6px 16px;">隐藏日志</button>
   <button class="btn-calc" onclick="togglePieChart()" id="pieToggleBtn" style="background:#6c757d; padding:6px 16px;">隐藏扇形图</button>
