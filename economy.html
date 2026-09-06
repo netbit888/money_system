@@ -38,6 +38,27 @@
   </div>
 </div>
 
+<div class="panel" id="govPanel">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="margin:0;">政府（税收抽取）</h2>
+  </div>
+  <div class="row" style="margin:8px 0; align-items:center;">
+    <label>税率：<input id="govTaxRate" type="number" step="0.01" min="0" max="1" style="width:70px;"></label>
+    <button class="btn-add" data-lock="1" onclick="applyTaxRate()">应用税率</button>
+    <span class="small" id="govTaxRateHint">从每笔成交的支付额中抽取，卖家实收 = 支付 × (1 − 税率)</span>
+  </div>
+  <div class="row" style="align-items:flex-start;">
+    <div style="flex:1; min-width:160px;">
+      <h3>国库（当前持有）</h3>
+      <div id="govTreasury" class="small">—</div>
+    </div>
+    <div style="flex:1; min-width:160px;">
+      <h3>累计征收</h3>
+      <div id="govCollected" class="small">—</div>
+    </div>
+  </div>
+</div>
+
 <div class="panel">
   <div style="display:flex; justify-content:space-between; align-items:center;">
     <h2 style="margin:0;">一、基础设置（抽象模板，新建个体时的初始值）</h2>
@@ -1093,6 +1114,7 @@ async function importFromConfigFolder() {
     document.getElementById("detailPanel").style.display = "none";
     document.getElementById("roundNum").textContent = round;
     document.getElementById("log").textContent = r.log;
+    renderGovernment(r.government);
     renderAll();
     alert("一键导入 config 完成");
   } catch (e) {
@@ -1114,6 +1136,7 @@ async function nextRound() {
     lastSummary = r.summary;
     document.getElementById("roundNum").textContent = round;
     document.getElementById("log").textContent = r.log;
+    renderGovernment(r.government);
     renderPersonList();
     if (selectedId !== null) renderDetail();
     _refreshHistoryIfVisible();
@@ -1130,6 +1153,7 @@ async function calculate() {
     persons = r.persons.map(normalizePerson);
     lastSummary = r.summary;
     document.getElementById("log").textContent = r.log;
+    renderGovernment(r.government);
     renderPersonList();
     if (selectedId !== null) renderDetail();
   } catch (e) { alert("交换计算失败：" + e.message); }
@@ -1147,6 +1171,7 @@ async function nextRoundAndCalculate() {
     lastSummary = r.summary;
     document.getElementById("roundNum").textContent = round;
     document.getElementById("log").textContent = r.log;
+    renderGovernment(r.government);
     renderPersonList();
     if (selectedId !== null) renderDetail();
     _refreshHistoryIfVisible();
@@ -1168,6 +1193,7 @@ async function resetRound() {
     document.getElementById("detailPanel").style.display = "none";
     document.getElementById("roundNum").textContent = round;
     document.getElementById("log").textContent = r.log;
+    renderGovernment(r.government);
     renderAll();
     _refreshHistoryIfVisible();
   } catch (e) { alert("重置失败：" + e.message); }
@@ -1179,6 +1205,40 @@ function _refreshHistoryIfVisible() {
   const wrap = document.getElementById("historyChartWrap");
   if (wrap && wrap.style.display !== "none") {
     fetchHistoryAndRender();
+  }
+}
+
+// ===================== 政府面板 =====================
+function _fmtGovDict(d) {
+  if (!d || Object.keys(d).length === 0) return "—";
+  return Object.entries(d).map(([k, v]) => `${k}: ${Number(v).toFixed(2)}`).join("，");
+}
+
+function renderGovernment(gov) {
+  if (!gov) return;
+  const rateInput = document.getElementById("govTaxRate");
+  if (rateInput && document.activeElement !== rateInput) {
+    rateInput.value = gov.tax_rate;
+  }
+  document.getElementById("govTreasury").textContent = _fmtGovDict(gov.treasury);
+  document.getElementById("govCollected").textContent = _fmtGovDict(gov.total_collected);
+}
+
+async function applyTaxRate() {
+  if (_busy) return;
+  const rate = parseFloat(document.getElementById("govTaxRate").value);
+  if (isNaN(rate) || rate < 0 || rate > 1) {
+    alert("税率必须在 0~1 之间");
+    return;
+  }
+  _setBusy(true);
+  try {
+    const r = await api("PUT", "/government", { tax_rate: rate });
+    renderGovernment(r.government);
+  } catch (e) {
+    alert("设置税率失败：" + e.message);
+  } finally {
+    _setBusy(false);
   }
 }
 
@@ -1197,6 +1257,7 @@ async function loadState() {
   round = s.round;
   lastSummary = s.summary;
   document.getElementById("roundNum").textContent = round;
+  renderGovernment(s.government);
   renderAll();
 }
 

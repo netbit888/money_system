@@ -61,6 +61,29 @@ class DefaultSettings:
     rules: list[Rule] = field(default_factory=list)
 
 
+@dataclass
+class Government:
+    """政府：非交易主体，从每笔成交的支付中强制抽取税收。
+
+    不进 persons 列表，不参与代谢/死亡/繁殖，summary() 不计入总人口。
+    """
+    tax_rate: float = 0.1                        # 税率：从支付额中抽取的比例
+    treasury: dict[str, float] = field(default_factory=dict)   # 国库当前持有
+    total_collected: dict[str, float] = field(default_factory=dict)  # 累计征收
+
+    def collect(self, res: str, amount: float) -> None:
+        """征收 amount 单位 res 资源（同时计入累计）。"""
+        if amount <= 0:
+            return
+        self.treasury[res] = self.treasury.get(res, 0.0) + amount
+        self.total_collected[res] = self.total_collected.get(res, 0.0) + amount
+
+    def reset(self) -> None:
+        """回合重置时清空国库与累计（税率保留）。"""
+        self.treasury.clear()
+        self.total_collected.clear()
+
+
 # ===================== 规范化函数 =====================
 def norm_ask(r) -> Rule:
     """规范化挂牌规则。兼容 Rule 对象、sell/buy、res1/res2、from/to 三种历史 dict 格式。"""
@@ -123,6 +146,7 @@ class Simulation:
             metabolism=Metabolism("食物", 1),
             income=Metabolism("钱", 1),
         )
+        self.government: Government = Government()
         # 持久化：历史曲线 + 快照存盘
         self.history: list[dict] = []                    # 每回合一行 {round, total, groups, resource_totals}
         self._history_dir = "snapshots"
@@ -516,10 +540,14 @@ class Simulation:
                             continue
 
                         pay = q * rate
+                        # 政府抽税：从支付额中按税率抽取，卖家实收 = pay - tax
+                        tax = pay * self.government.tax_rate
+                        seller_gets = pay - tax
                         A.attrs[pay_res] = a_pay - pay
                         A.attrs[res] = float(A.attrs.get(res, 0)) + q
                         B.attrs[res] = inv - q
-                        B.attrs[pay_res] = float(B.attrs.get(pay_res, 0)) + pay
+                        B.attrs[pay_res] = float(B.attrs.get(pay_res, 0)) + seller_gets
+                        self.government.collect(pay_res, tax)
                         remaining -= q
 
                         stat["sellers"].add(B.id)
@@ -528,10 +556,10 @@ class Simulation:
                         stat["met"] += q
 
                         if verbose:
-                            out.append(f"  ✓ {B.name} 成交 {fmt_num(q)}，付 {fmt_num(pay)}{pay_res}（@{fmt_num(rate)}）")
+                            out.append(f"  ✓ {B.name} 成交 {fmt_num(q)}，付 {fmt_num(pay)}{pay_res}（税 {fmt_num(tax)}，@{fmt_num(rate)}）")
                         trades.append((
                             A.name, B.name, res,
-                            q, pay, pay_res, rate,
+                            q, pay, pay_res, rate, tax,
                         ))
 
                         # 卖家库存耗尽 → 下个卖家；否则继续用该卖家
@@ -568,14 +596,25 @@ class Simulation:
                 f"满足率 {fmt_num(total_met)}/{fmt_num(total_demand)}{rate_pct}"
             )
 
+        # 政府税收汇总（两种模式均输出）
+        if self.government.tax_rate > 0 and self.government.total_collected:
+            out.append("")
+            out.append("── 政府税收 ──")
+            for res in sorted(set(self.government.treasury) | set(self.government.total_collected)):
+                out.append(
+                    f"  {res}：国库 {fmt_num(self.government.treasury.get(res, 0))}"
+                    f" / 累计征收 {fmt_num(self.government.total_collected.get(res, 0))}"
+                )
+
         # 交易汇总（仅 verbose）
         if verbose and trades:
             out.append("")
             out.append("── 交易汇总 ──")
-            for buyer, seller, res, qty, pay, pay_res, rate in trades:
+            for buyer, seller, res, qty, pay, pay_res, rate, tax in trades:
                 out.append(
                     f"  {buyer} ← {seller}：{res}×{fmt_num(qty)} @"
                     f"{fmt_num(rate)}{pay_res} = {fmt_num(pay)}{pay_res}"
+                    f"（税 {fmt_num(tax)}）"
                 )
 
         # 最终状态：verbose 模式输出每个体变化（交换是零和的，汇总模式不输出总量变化）
@@ -613,6 +652,17 @@ class Simulation:
             msgs.append("❌ 未找到 config/economy_defaults.json，基础设置未更新")
         except Exception as e:
             msgs.append(f"❌ 读取 config/economy_defaults.json 失败：{e}")
+
+        # 1.5 政府税率（从同一 defaults 文件读取）
+        try:
+            self.government.tax_rate = load_gov_tax_rate(dpath)
+            self.government.reset()
+            msgs.append(f"政府税率已加载：{self.government.tax_rate}")
+        except FileNotFoundError:
+            self.government.reset()
+        except Exception as e:
+            msgs.append(f"❌ 读取政府税率失败：{e}")
+            self.government.reset()
 
         # 2. 个体配置
         ppath = os.path.join(config_folder, "economy_persons.json")
@@ -763,7 +813,7 @@ def import_persons(path: str, defaults: DefaultSettings) -> list[Person]:
     return [_person_from_dict(p, defaults) for p in data.get("persons", [])]
 
 
-def export_defaults(path: str, defaults: DefaultSettings) -> None:
+def export_defaults(path: str, defaults: DefaultSettings, government: Government | None = None) -> None:
     data = {
         "type": "economy-defaults",
         "version": 1,
@@ -777,10 +827,21 @@ def export_defaults(path: str, defaults: DefaultSettings) -> None:
             "needs": [{"key": n.key, "amount": n.amount} for n in defaults.needs],
             "rules": [{"sell": r.sell, "buy": r.buy, "rate": r.rate} for r in defaults.rules],
         },
+        "government": {
+            "tax_rate": government.tax_rate if government is not None else 0.1,
+        },
         "exportedAt": datetime.now(timezone.utc).isoformat(),
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def load_gov_tax_rate(path: str) -> float:
+    """从 defaults 配置文件读取政府税率，缺失时返回 0.1。"""
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    gov = data.get("government") or {}
+    return float(gov.get("tax_rate", 0.1))
 
 
 def import_defaults(path: str) -> DefaultSettings:

@@ -12,7 +12,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from engine import (
-    Simulation, DefaultSettings, Person, Metabolism, Need, Rule,
+    Simulation, DefaultSettings, Person, Metabolism, Need, Rule, Government,
     norm_ask, norm_metabolism, export_persons, export_defaults,
 )
 
@@ -49,6 +49,14 @@ def defaults_to_dict(d: DefaultSettings) -> dict:
         "attrs": dict(d.attrs),
         "needs": [{"key": n.key, "amount": n.amount} for n in d.needs],
         "rules": [{"sell": r.sell, "buy": r.buy, "rate": r.rate} for r in d.rules],
+    }
+
+
+def government_to_dict(g: Government) -> dict:
+    return {
+        "tax_rate": g.tax_rate,
+        "treasury": dict(g.treasury),
+        "total_collected": dict(g.total_collected),
     }
 
 
@@ -183,6 +191,7 @@ class Handler(BaseHTTPRequestHandler):
                     "defaults": defaults_to_dict(sim.defaults),
                     "persons": all_persons(),
                     "summary": sim.summary(),
+                    "government": government_to_dict(sim.government),
                 })
                 return
 
@@ -207,6 +216,18 @@ class Handler(BaseHTTPRequestHandler):
                 body = self._read_body()
                 sim.defaults = defaults_from_dict(body)
                 self._json({"ok": True, "defaults": defaults_to_dict(sim.defaults)})
+                return
+
+            if method == "PUT" and path == "/government":
+                body = self._read_body()
+                rate = body.get("tax_rate")
+                if rate is None:
+                    raise HttpError(400, "缺少 tax_rate 字段")
+                rate = float(rate)
+                if rate < 0 or rate > 1:
+                    raise HttpError(400, "税率必须在 0~1 之间")
+                sim.government.tax_rate = rate
+                self._json({"ok": True, "government": government_to_dict(sim.government)})
                 return
 
             if method == "POST" and path == "/person":
@@ -236,17 +257,17 @@ class Handler(BaseHTTPRequestHandler):
 
             if method == "POST" and path == "/next-round":
                 log = sim.next_round()
-                self._json({"log": log, "summary": sim.summary(), "persons": all_persons()})
+                self._json({"log": log, "summary": sim.summary(), "persons": all_persons(), "government": government_to_dict(sim.government)})
                 return
 
             if method == "POST" and path == "/calculate":
                 log = sim.calculate()
-                self._json({"log": log, "summary": sim.summary(), "persons": all_persons()})
+                self._json({"log": log, "summary": sim.summary(), "persons": all_persons(), "government": government_to_dict(sim.government)})
                 return
 
             if method == "POST" and path == "/next-and-calc":
                 log = sim.next_round_and_calculate()
-                self._json({"log": log, "summary": sim.summary(), "persons": all_persons()})
+                self._json({"log": log, "summary": sim.summary(), "persons": all_persons(), "government": government_to_dict(sim.government)})
                 return
 
             if method == "POST" and path in ("/reset", "/load-config-folder"):
@@ -256,6 +277,7 @@ class Handler(BaseHTTPRequestHandler):
                     "summary": sim.summary(),
                     "persons": all_persons(),
                     "defaults": defaults_to_dict(sim.defaults),
+                    "government": government_to_dict(sim.government),
                 })
                 return
 
@@ -281,7 +303,7 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET" and path == "/export-defaults":
                 fd, tmp = tempfile.mkstemp(suffix=".json")
                 os.close(fd)
-                export_defaults(tmp, sim.defaults)
+                export_defaults(tmp, sim.defaults, sim.government)
                 with open(tmp, "rb") as f:
                     data = f.read()
                 os.unlink(tmp)
