@@ -126,6 +126,13 @@
       <input id="dRate" type="number" step="0.01" placeholder="单价(1卖=?收)">
       <button class="btn-add" onclick="addDefaultRule()">添加</button>
     </div>
+
+    <h3>易腐资源（仅当期有效，每回合开始清零库存）</h3>
+    <div id="defaultPerishable"></div>
+    <div class="row" style="margin-top:6px;">
+      <input id="dPeriKey" placeholder="资源名(如劳动力)">
+      <button class="btn-add" onclick="addDefaultPerishable()">添加</button>
+    </div>
   </div>
 </div>
 
@@ -296,7 +303,8 @@ function normalizeDefaults(d) {
     reproInheritMult: d.reproInheritMult ?? 1.0,
     attrs: d.attrs || {},
     needs: (d.needs || []).map(n => ({ key: n.key, amount: n.amount })),
-    rules: (d.rules || []).map(r => normAsk(r))
+    rules: (d.rules || []).map(r => normAsk(r)),
+    perishable_resources: (d.perishable_resources || []).map(r => String(r))
   };
 }
 
@@ -557,6 +565,7 @@ function renderDefaults() {
   renderDefaultAttrs();
   renderDefaultNeeds();
   renderDefaultRules();
+  renderDefaultPerishable();
 }
 
 function renderDefaultAttrs() {
@@ -598,6 +607,40 @@ function renderDefaultRules() {
   });
   html += "</table>";
   box.innerHTML = html;
+}
+
+function renderDefaultPerishable() {
+  const box = document.getElementById("defaultPerishable");
+  if (!defaultSettings.perishable_resources || defaultSettings.perishable_resources.length === 0) {
+    box.innerHTML = "<i>无（所有资源均可跨回合储存）</i>";
+    return;
+  }
+  let html = "<table><tr><th>资源名</th><th>操作</th></tr>";
+  defaultSettings.perishable_resources.forEach((r, i) => {
+    html += `<tr><td><input value="${r}" onchange="updateDefaultPerishable(${i},this.value)"></td>` +
+            `<td><button class="btn-del" onclick="deleteDefaultPerishable(${i})">删除</button></td></tr>`;
+  });
+  html += "</table>";
+  box.innerHTML = html;
+}
+
+function updateDefaultPerishable(i, v) {
+  defaultSettings.perishable_resources[i] = v.trim();
+  putDefaults();
+}
+function deleteDefaultPerishable(i) {
+  defaultSettings.perishable_resources.splice(i, 1);
+  renderDefaultPerishable();
+  putDefaults();
+}
+function addDefaultPerishable() {
+  const k = document.getElementById("dPeriKey").value.trim();
+  if (!k) { alert("请填写资源名"); return; }
+  if (!defaultSettings.perishable_resources) defaultSettings.perishable_resources = [];
+  defaultSettings.perishable_resources.push(k);
+  document.getElementById("dPeriKey").value = "";
+  renderDefaultPerishable();
+  putDefaults();
 }
 
 // 基础设置编辑（onchange 即时修改本地 + PUT 推送）

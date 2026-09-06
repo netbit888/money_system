@@ -49,6 +49,7 @@ def defaults_to_dict(d: DefaultSettings) -> dict:
         "attrs": dict(d.attrs),
         "needs": [{"key": n.key, "amount": n.amount} for n in d.needs],
         "rules": [{"sell": r.sell, "buy": r.buy, "rate": r.rate} for r in d.rules],
+        "perishable_resources": list(d.perishable_resources),
     }
 
 
@@ -94,6 +95,7 @@ def defaults_from_dict(d: dict) -> DefaultSettings:
         attrs={k: float(v) for k, v in (d.get("attrs") or {}).items()},
         needs=[Need(n["key"], float(n["amount"])) for n in (d.get("needs") or [])],
         rules=[norm_ask(r) for r in (d.get("rules") or [])],
+        perishable_resources=[str(r) for r in (d.get("perishable_resources") or [])],
     )
 
 

@@ -27,7 +27,10 @@
         "amount": 2.0
       }
     ],
-    "rules": []
+    "rules": [],
+    "perishable_resources": [
+      "劳动力"
+    ]
   },
   "government": {
     "tax_rate": 0.1

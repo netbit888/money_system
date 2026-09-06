@@ -59,6 +59,7 @@ class DefaultSettings:
     attrs: dict[str, float] = field(default_factory=dict)
     needs: list[Need] = field(default_factory=list)
     rules: list[Rule] = field(default_factory=list)
+    perishable_resources: list[str] = field(default_factory=list)  # 易腐资源：每回合开始清零，仅当期有效
 
 
 @dataclass
@@ -239,6 +240,26 @@ class Simulation:
             for p in self.persons:
                 out.append(f"  {p.name}：{self._fmt_attrs(p.attrs)}")
             out.append("")
+
+        # 0. 清除易腐资源（仅当期有效）：代谢前清零，本回合收入再生产新鲜资源
+        cleared: dict[str, float] = {}
+        if self.defaults.perishable_resources:
+            for p in self.persons:
+                for res in self.defaults.perishable_resources:
+                    v = float(p.attrs.get(res, 0))
+                    if v > 0:
+                        p.attrs[res] = 0.0
+                        cleared[res] = cleared.get(res, 0.0) + v
+            if verbose:
+                out.append("── 易腐资源清除 ──")
+                if cleared:
+                    for res, amt in cleared.items():
+                        out.append(f"  {res}：共清除 {fmt_num(amt)}")
+                else:
+                    out.append("  （无易腐资源库存）")
+                out.append("")
+            elif cleared:
+                out.append("易腐资源已清除：" + "，".join(f"{res} {fmt_num(amt)}" for res, amt in cleared.items()))
 
         # 1. 基础代谢：每个个体按自身 metabolism {res, amount} 扣减
         consumed = []
@@ -826,6 +847,7 @@ def export_defaults(path: str, defaults: DefaultSettings, government: Government
             "attrs": dict(defaults.attrs),
             "needs": [{"key": n.key, "amount": n.amount} for n in defaults.needs],
             "rules": [{"sell": r.sell, "buy": r.buy, "rate": r.rate} for r in defaults.rules],
+            "perishable_resources": list(defaults.perishable_resources),
         },
         "government": {
             "tax_rate": government.tax_rate if government is not None else 0.1,
@@ -857,6 +879,7 @@ def import_defaults(path: str) -> DefaultSettings:
         attrs={k: float(v) for k, v in (src.get("attrs") or {}).items()},
         needs=[Need(n["key"], float(n["amount"])) for n in (src.get("needs") or [])],
         rules=[norm_ask(r) for r in (src.get("rules") or [])],
+        perishable_resources=[str(r) for r in (src.get("perishable_resources") or [])],
     )
 
 
