@@ -102,6 +102,16 @@
       <button class="btn-add" onclick="addDefaultRule()">添加</button>
     </div>
 
+    <h3>价格自适应（轻量价格发现）</h3>
+    <div class="row" style="margin:6px 0; align-items:center;">
+      <label style="font-size:13px; cursor:pointer;">
+        <input type="checkbox" id="dAdaptive" onchange="updateAdaptivePricing()"> 启用：按成交率自动调价（卖光→涨价，滞销→降价）
+      </label>
+    </div>
+    <div class="row" style="margin:6px 0; align-items:center;">
+      <label style="font-size:13px; white-space:nowrap;">调价强度 α <input id="dAlpha" type="number" step="0.01" min="0" max="1" placeholder="0.1" style="width:70px;" onchange="updatePriceAlpha()"> （0=不调，越大波动越剧烈）</label>
+    </div>
+
     <h3>易腐资源（仅当期有效，每回合开始清零库存）</h3>
     <div id="defaultPerishable"></div>
     <div class="row" style="margin-top:6px;">
@@ -203,6 +213,8 @@ function renderDefaults() {
   renderDefaultNeeds();
   renderDefaultRules();
   renderDefaultPerishable();
+  document.getElementById("dAdaptive").checked = !!defaultSettings.adaptive_pricing;
+  document.getElementById("dAlpha").value = defaultSettings.price_adjust_alpha ?? 0.1;
 }
 
 function renderDefaultAttrs() {
@@ -401,6 +413,18 @@ function addDefaultRule() {
   document.getElementById("dTo").value = "";
   document.getElementById("dRate").value = "";
   renderDefaultRules();
+  putDefaults();
+}
+
+function updateAdaptivePricing() {
+  defaultSettings.adaptive_pricing = document.getElementById("dAdaptive").checked;
+  putDefaults();
+}
+
+function updatePriceAlpha() {
+  const v = parseFloat(document.getElementById("dAlpha").value);
+  if (isNaN(v) || v < 0 || v > 1) { alert("α 必须在 0~1 之间"); renderDefaults(); return; }
+  defaultSettings.price_adjust_alpha = v;
   putDefaults();
 }
 

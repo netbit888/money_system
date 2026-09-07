@@ -104,7 +104,9 @@ function normalizeDefaults(d) {
     attrs: d.attrs || {},
     needs: (d.needs || []).map(n => ({ key: n.key, amount: n.amount })),
     rules: (d.rules || []).map(r => normAsk(r)),
-    perishable_resources: (d.perishable_resources || []).map(r => String(r))
+    perishable_resources: (d.perishable_resources || []).map(r => String(r)),
+    adaptive_pricing: d.adaptive_pricing === true,
+    price_adjust_alpha: Number(d.price_adjust_alpha) || 0.1
   };
 }
 

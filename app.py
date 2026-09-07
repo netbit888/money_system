@@ -58,6 +58,8 @@ def defaults_to_dict(d: DefaultSettings) -> dict:
         "needs": [{"key": n.key, "amount": n.amount} for n in d.needs],
         "rules": [{"sell": r.sell, "buy": r.buy, "rate": r.rate} for r in d.rules],
         "perishable_resources": list(d.perishable_resources),
+        "adaptive_pricing": d.adaptive_pricing,
+        "price_adjust_alpha": d.price_adjust_alpha,
     }
 
 
@@ -112,6 +114,8 @@ def defaults_from_dict(d: dict) -> DefaultSettings:
         needs=[Need(n["key"], float(n["amount"])) for n in (d.get("needs") or [])],
         rules=[norm_ask(r) for r in (d.get("rules") or [])],
         perishable_resources=[str(r) for r in (d.get("perishable_resources") or [])],
+        adaptive_pricing=bool(d.get("adaptive_pricing", False)),
+        price_adjust_alpha=float(d.get("price_adjust_alpha", 0.1)),
     )
 
 

@@ -72,6 +72,8 @@ class DefaultSettings:
     needs: list[Need] = field(default_factory=list)
     rules: list[Rule] = field(default_factory=list)
     perishable_resources: list[str] = field(default_factory=list)  # 易腐资源：每回合开始清零，仅当期有效
+    adaptive_pricing: bool = False        # 轻量价格发现：按成交率反馈调整每个挂牌 rate
+    price_adjust_alpha: float = 0.1       # 调价强度 α：0~1，越大价格波动越剧烈
 
 
 @dataclass
@@ -557,12 +559,15 @@ class Simulation:
 
         # 卖家索引：资源 → [(卖方, 规则), ...]，按 rate 升序预排序
         # 同一卖家的多 ask 通过 seller.attrs[res] 实时维护库存，自然同步
-        sellers_by_res: dict[str, list[tuple[Person, Rule]]] = {}
+        sellers_by_res: dict[str, list[tuple[Person, Rule, int]]] = {}
+        rule_listed: dict[tuple[int, int], float] = {}   # (person_id, rule_idx) -> 挂牌时库存
+        rule_sold: dict[tuple[int, int], float] = {}     # (person_id, rule_idx) -> 本回合成交量
         for B in entities:
-            for rule in B.rules:
+            for idx, rule in enumerate(B.rules):
                 if rule.rate <= 0:
                     continue
-                sellers_by_res.setdefault(rule.sell, []).append((B, rule))
+                sellers_by_res.setdefault(rule.sell, []).append((B, rule, idx))
+                rule_listed[(B.id, idx)] = float(B.attrs.get(rule.sell, 0))
         for lst in sellers_by_res.values():
             lst.sort(key=lambda x: x[1].rate)
 
@@ -610,7 +615,7 @@ class Simulation:
 
                     remaining = amount
                     while remaining > 0 and seller_idx < n_sellers:
-                        B, rule = sellers[seller_idx]
+                        B, rule, idx = sellers[seller_idx]
                         if B is A:
                             seller_idx += 1
                             continue
@@ -641,6 +646,7 @@ class Simulation:
                         A.attrs[res] = float(A.attrs.get(res, 0)) + q
                         B.attrs[res] = inv - q
                         B.attrs[pay_res] = float(B.attrs.get(pay_res, 0)) + seller_gets
+                        rule_sold[(B.id, idx)] = rule_sold.get((B.id, idx), 0.0) + q
                         self.government.collect(pay_res, tax)
                         remaining -= q
 
@@ -721,6 +727,26 @@ class Simulation:
         # 写回 persons（顺序严格对应）
         for i, e in enumerate(entities):
             self.persons[i].attrs = dict(e.attrs)
+
+        # 自适应调价（轻量价格发现）：按本回合成交率反馈调整每个挂牌的 rate
+        # fill = 成交量 / 挂牌库存；卖光(fill=1)→涨价，滞销(fill=0)→降价
+        if self.defaults.adaptive_pricing and self.defaults.price_adjust_alpha > 0:
+            alpha = float(self.defaults.price_adjust_alpha)
+            adjusted = 0
+            for (pid, idx), listed in rule_listed.items():
+                if listed <= 0:
+                    continue
+                sold = rule_sold.get((pid, idx), 0.0)
+                fill = sold / listed
+                p = self.find(pid)
+                if p is None or idx >= len(p.rules):
+                    continue
+                new_rate = p.rules[idx].rate * (1.0 + alpha * (2.0 * fill - 1.0))
+                if new_rate < 1e-6:
+                    new_rate = 1e-6
+                p.rules[idx].rate = new_rate
+                adjusted += 1
+            out.append(f"价格自适应：调整 {adjusted} 条挂牌（α={alpha}）")
 
         return "\n".join(out)
 
