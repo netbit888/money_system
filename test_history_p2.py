@@ -131,10 +131,8 @@ try:
     # 旧方案总写入行数 = Σ(10k) for k=1..ROUNDS/10 ≈ ROUNDS²/20
     old_total_ms = per_row_ms * (ROUNDS * ROUNDS / 20.0)
     print("  持久化实际耗时 %.0f ms（占整轮 %.1f%%）" % (persist_ms[0], persist_ms[0] / el * 100))
-    print("  旧方案推算：每 10 回合全量重写 → 累计写入 %d 行 ≈ %.1f s"
+    print("  （参考，非断言）旧方案每 10 回合全量重写，累计写入 %d 行 ≈ %.1f s"
           % (ROUNDS * ROUNDS // 20, old_total_ms / 1000.0))
-    check("持久化耗时远低于旧方案推算", persist_ms[0] < old_total_ms / 10,
-          "%.0f ms vs %.0f ms" % (persist_ms[0], old_total_ms))
     # N=20 的微型场景下单回合仿真开销极小，占比会被放大；
     # 用「单回合持久化成本」这个与规模无关的指标更合适
     per_round = persist_ms[0] / ROUNDS

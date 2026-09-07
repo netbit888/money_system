@@ -599,13 +599,14 @@ class Simulation:
         # 1. 基础收入：先产出资源，为后续交换提供供给
         earned = []
         for p in self.persons:
-            inc = self._norm_person_income(p)
+            inc = p.income          # 内存中恒为 Metabolism，省函数调用 + isinstance
             if inc.amount <= 0:
                 continue
             before_v = float(p.attrs.get(inc.res, 0))
             p.attrs[inc.res] = before_v + inc.amount
-            earned.append((p, inc.res, inc.amount, before_v, p.attrs[inc.res]))
-            _add_delta(inc.res, inc.amount)
+            res_delta[inc.res] = res_delta.get(inc.res, 0.0) + inc.amount
+            if verbose:
+                earned.append((p, inc.res, inc.amount, before_v, p.attrs[inc.res]))
         if verbose and earned:
             out.append("── 基础收入 ──")
             for p, res, amt, b, a in earned:
@@ -621,11 +622,14 @@ class Simulation:
         # 3. 基础代谢：每个个体按自身 metabolism {res, amount} 扣减（资源可能来自交换）
         consumed = []
         for p in self.persons:
-            m = self._norm_person_metabolism(p)
+            m = p.metabolism
             before_v = float(p.attrs.get(m.res, 0))
-            p.attrs[m.res] = before_v - m.amount
-            consumed.append((p, m.res, m.amount, before_v, p.attrs[m.res]))
-            _add_delta(m.res, -m.amount)
+            after = before_v - m.amount
+            p.attrs[m.res] = after
+            if m.amount:
+                res_delta[m.res] = res_delta.get(m.res, 0.0) - m.amount
+            if after < 0 or verbose:
+                consumed.append((p, m.res, m.amount, before_v, after))
 
         if verbose:
             out.append("── 基础代谢 ──")
@@ -666,7 +670,7 @@ class Simulation:
         born = []
         reproducers = [p for p in self.persons if p.canReproduce]
         for p in reproducers:
-            m = self._norm_person_metabolism(p)
+            m = p.metabolism
             amount = m.amount
             if amount <= 0:
                 continue                               # 代谢为 0 → 阈值为 0 → 禁止繁殖（防指数爆炸）
@@ -697,7 +701,7 @@ class Simulation:
                 parentId=p.id,                                # 永久依赖母体
                 name=f"{get_base_name(p.name)}#{child_id}",  # 基础名+子代id（避免链式叠加）
                 metabolism=Metabolism(m.res, amount),
-                income=self._norm_person_income(p),          # 克隆母体收入
+                income=p.income,                              # 与 _norm_person_income 原语义一致（共享引用）
                 canReproduce=p.canReproduce,
                 reproThresholdMult=p.reproThresholdMult,
                 reproInheritMult=p.reproInheritMult,
@@ -732,7 +736,7 @@ class Simulation:
         for c in self.persons:
             if c.parentId is None or not c.dependent:
                 continue
-            cm = self._norm_person_metabolism(c)
+            cm = c.metabolism
             if cm.amount <= 0:
                 continue
             # 个体级养育期优先，未设置则继承全局
@@ -770,7 +774,7 @@ class Simulation:
             if not children:
                 continue
             for child in children:
-                cm = self._norm_person_metabolism(child)
+                cm = child.metabolism
                 need_res = cm.res          # 子代需要的资源（不是母体的代谢资源）
                 need = cm.amount
                 if need <= 0:
@@ -988,7 +992,6 @@ class Simulation:
                         attrs[b_idx][res] = inv - q
                         attrs[b_idx][pay_res] = float(attrs[b_idx].get(pay_res, 0)) + seller_gets
                         rule_sold[(ids[b_idx], idx)] = rule_sold.get((ids[b_idx], idx), 0.0) + q
-                        self.government.collect(pay_res, tax)
                         self._last_tax[pay_res] = self._last_tax.get(pay_res, 0.0) + tax
                         remaining -= q
 
@@ -1037,6 +1040,10 @@ class Simulation:
                 f"  成交 {total_trades} 笔 / 流转 {fmt_num(total_volume)} / "
                 f"满足率 {fmt_num(total_met)}/{fmt_num(total_demand)}{rate_pct}"
             )
+
+        # 税收统一入账：撮合内不再逐笔 collect，改为结束时一次入账（省每回合 ~10 万次字典操作）
+        for _res, _amt in self._last_tax.items():
+            self.government.collect(_res, _amt)
 
         # 政府税收汇总（两种模式均输出）
         if self.government.tax_rate > 0 and self.government.total_collected:
