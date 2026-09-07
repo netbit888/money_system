@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 
 
 # ===================== 数据结构 =====================
-@dataclass
+@dataclass(slots=True)
 class Rule:
     """挂牌规则：1 单位 sell 兑换 rate 单位 buy。"""
     sell: str
@@ -20,20 +20,20 @@ class Rule:
     rate: float
 
 
-@dataclass
+@dataclass(slots=True)
 class Metabolism:
     """代谢/收入：每回合扣减/增加 amount 单位 res 资源。"""
     res: str
     amount: float
 
 
-@dataclass
+@dataclass(slots=True)
 class Need:
     key: str
     amount: float
 
 
-@dataclass
+@dataclass(slots=True)
 class Person:
     id: int
     parentId: int | None           # 永久依赖母体（繁殖时记录）
@@ -171,6 +171,10 @@ def gini(values: list[float]) -> float:
     return (2.0 * cum) / (n * total) - (n + 1.0) / n
 
 
+# gini 采样上限：财富列表超过该规模时均匀采样，近似计算，避免 O(N log N)（3.5）
+_GINI_SAMPLE_SIZE = 10000
+
+
 # ===================== 历史分层降采样 =====================
 # 长时间运行时历史会无限增长，写入是「每 10 回合全量重写」→ O(R²)。
 # 这里改为：L0 保留近 1000 回合原始行，更老的按 10:1 逐层折叠归档。
@@ -245,6 +249,8 @@ class Simulation:
         # 经济指标暂存（每回合 calculate/next_round 后刷新，供 _record_history 使用）
         self._last_trade_agg: dict = {}    # 本回合成交聚合：{res: {qty, pay:{pay_res:sum}, sellers:set}}
         self._last_met_rate: float | None = None   # 整体需求满足率（met/demand）
+        self._last_tax: dict[str, float] = {}      # 本回合税收（按支付资源），供资源总量 delta 账本
+        self._last_res_delta: dict[str, float] = {}  # 本回合资源总量变化（delta 账本）
         self._last_n_dead: int = 0
         self._last_n_born: int = 0
         # 持久化：分层历史。history_dir 可注入 —— 测试/基准必须传临时目录，
@@ -383,6 +389,7 @@ class Simulation:
         resource_totals: dict[str, float] = {}
         group_wealth: dict[str, float] = {}
         wealth_list: list[float] = []
+        labor_posted: list[Person] = []   # 挂出劳动力的个体（3.6：与统计同趟收集，省二次遍历）
         for p in self.persons:
             base = get_base_name(p.name)
             groups[base] = groups.get(base, 0) + 1
@@ -393,7 +400,9 @@ class Simulation:
                 w += fv
             group_wealth[base] = group_wealth.get(base, 0.0) + w
             wealth_list.append(w)
-        metrics = self._compute_metrics(groups, group_wealth, wealth_list)
+            if any(r.sell == "劳动力" for r in p.rules):
+                labor_posted.append(p)
+        metrics = self._compute_metrics(groups, group_wealth, wealth_list, labor_posted)
         self._levels[0].append({
             "round": self.round,
             "span": 1,
@@ -409,6 +418,7 @@ class Simulation:
         groups: dict[str, int],
         group_wealth: dict[str, float],
         wealth_list: list[float],
+        labor_posted: list[Person],
     ) -> dict:
         """根据本回合末状态 + 暂存的成交聚合，计算经济指标。
 
@@ -434,8 +444,12 @@ class Simulation:
         # 3. 需求满足率（生态健康信号）
         m["met_rate"] = self._last_met_rate
 
-        # 4. 基尼系数（财富净值分布）
-        m["gini"] = gini(wealth_list)
+        # 4. 基尼系数（财富净值分布）：大 N 均匀采样近似，避免 O(N log N)（3.5）
+        wl = wealth_list
+        if len(wl) > _GINI_SAMPLE_SIZE:
+            step = (len(wl) + _GINI_SAMPLE_SIZE - 1) // _GINI_SAMPLE_SIZE
+            wl = wl[::step]
+        m["gini"] = gini(wl)
 
         # 5. 产业集中度 HHI（财富口径 + 人口口径）：Σ share²，1/n ~ 1
         total_w = sum(group_wealth.values())
@@ -447,8 +461,7 @@ class Simulation:
             sum((c / total_p) ** 2 for c in groups.values()) if total_p > 0 else 0.0
         )
 
-        # 6. 失业率（劳动力口径）：挂出劳动力却 0 成交者占比
-        labor_posted = [p for p in self.persons if any(r.sell == "劳动力" for r in p.rules)]
+        # 6. 失业率（劳动力口径）：挂出劳动力却 0 成交者占比（labor_posted 由 _record_history 同趟收集）
         n_posted = len(labor_posted)
         if n_posted > 0:
             sold_ids = self._last_trade_agg.get("劳动力", {}).get("sellers", set())
@@ -545,8 +558,15 @@ class Simulation:
 
         self.round += 1
         n_before = len(self.persons)
-        # 回合前快照（用于末尾资源总量变化计算）
-        before = {p.id: dict(p.attrs) for p in self.persons}
+        # 回合前快照：仅 verbose 需要（per-person diff 展示）；大 N 非 verbose 走 delta 账本，省全量拷贝（3.1）
+        before = {p.id: dict(p.attrs) for p in self.persons} if verbose else None
+
+        # 资源总量变化账本：回合内就地累加，替代 before/after 快照差值（3.1）
+        res_delta: dict[str, float] = {}
+
+        def _add_delta(res: str, amount: float) -> None:
+            if amount:
+                res_delta[res] = res_delta.get(res, 0.0) + amount
 
         out = [f"═══ 第 {self.round} 回合 ═══"]
         if verbose:
@@ -564,6 +584,7 @@ class Simulation:
                     if v > 0:
                         p.attrs[res] = 0.0
                         cleared[res] = cleared.get(res, 0.0) + v
+                        _add_delta(res, -v)
             if verbose:
                 out.append("── 易腐资源清除 ──")
                 if cleared:
@@ -584,6 +605,7 @@ class Simulation:
             before_v = float(p.attrs.get(inc.res, 0))
             p.attrs[inc.res] = before_v + inc.amount
             earned.append((p, inc.res, inc.amount, before_v, p.attrs[inc.res]))
+            _add_delta(inc.res, inc.amount)
         if verbose and earned:
             out.append("── 基础收入 ──")
             for p, res, amt, b, a in earned:
@@ -592,6 +614,9 @@ class Simulation:
         # 2. 交换计算：个体用本回合收入产出的资源交易，获取代谢所需
         out.append("")
         out.extend(self.calculate(verbose=verbose).split("\n"))
+        # 税收从 persons 转政府（交换净流出 = tax）
+        for res, amt in self._last_tax.items():
+            _add_delta(res, -amt)
 
         # 3. 基础代谢：每个个体按自身 metabolism {res, amount} 扣减（资源可能来自交换）
         consumed = []
@@ -600,6 +625,7 @@ class Simulation:
             before_v = float(p.attrs.get(m.res, 0))
             p.attrs[m.res] = before_v - m.amount
             consumed.append((p, m.res, m.amount, before_v, p.attrs[m.res]))
+            _add_delta(m.res, -m.amount)
 
         if verbose:
             out.append("── 基础代谢 ──")
@@ -623,6 +649,8 @@ class Simulation:
                         self.government.collect(k, v)          # 资产归政府国库
                         seized[k] = v
                         seized_total[k] = seized_total.get(k, 0.0) + v
+                        _add_delta(k, -v)                      # 清算资产转政府
+                _add_delta(res, -a)                            # 负代谢资源回补（a < 0）
                 if verbose:
                     out.append(f"  ✗ {p.name} 死亡（{res}={fmt_num(a)}）")
                     if seized:
@@ -661,6 +689,7 @@ class Simulation:
             p.attrs[m.res] = current - cost                      # 母体付出生育成本
             child_attrs[m.res] = inherit
             loss = cost - inherit                                # 生育损耗：退出系统
+            _add_delta(m.res, -loss)
             child_id = self.next_id
             self.next_id += 1
             child = Person(
@@ -797,34 +826,24 @@ class Simulation:
                     + "，".join(f"{k} {fmt_num(v)}" for k, v in sorted(seized_total.items()))
                 )
 
-            # 资源总量变化（包括死亡消失的资源、新生增加的资源）
-            before_total: dict[str, float] = {}
-            for attrs in before.values():
-                for k, v in attrs.items():
-                    before_total[k] = before_total.get(k, 0.0) + float(v)
-            after_total: dict[str, float] = {}
-            for p in self.persons:
-                for k, v in p.attrs.items():
-                    after_total[k] = after_total.get(k, 0.0) + float(v)
-            all_keys = set(before_total) | set(after_total)
-            if all_keys:
+            # 资源总量变化（delta 账本：回合内就地累加，含死亡消失、新生增加、税收、损耗）
+            if res_delta:
                 out.append("")
                 out.append("── 资源总量变化 ──")
-                for k in sorted(all_keys):
-                    before_v = before_total.get(k, 0.0)
-                    after_v = after_total.get(k, 0.0)
-                    delta = after_v - before_v
+                for k in sorted(res_delta):
+                    delta = res_delta[k]
                     if delta > 0:
                         delta_str = f"（+{fmt_num(delta)}）"
                     elif delta < 0:
                         delta_str = f"（-{fmt_num(abs(delta))}）"
                     else:
                         delta_str = "（不变）"
-                    out.append(f"  {k}：{fmt_num(before_v)} → {fmt_num(after_v)}{delta_str}")
+                    out.append(f"  {k}：{delta_str}")
 
         # 持久化：记录历史曲线 + 每 N 回合存盘
         self._last_n_dead = n_dead
         self._last_n_born = n_born
+        self._last_res_delta = res_delta
         self._record_history()
         self._maybe_persist()
 
@@ -842,51 +861,47 @@ class Simulation:
         if not self.persons:
             raise ValueError("无个体")
 
-        # 工作副本：复制 attrs/needs/rules，过程中不破坏原数据
-        entities = [
-            Person(
-                id=p.id, parentId=p.parentId, name=p.name,
-                metabolism=p.metabolism, income=p.income,
-                canReproduce=p.canReproduce,
-                reproThresholdMult=p.reproThresholdMult,
-                reproInheritMult=p.reproInheritMult,
-                attrs=dict(p.attrs),
-                needs=[Need(n.key, n.amount) for n in p.needs],
-                rules=[norm_ask(r) for r in p.rules],
-            )
-            for p in self.persons
-        ]
-        before_attrs = [dict(e.attrs) for e in entities]
+        self._last_tax = {}   # 本回合税收（按支付资源），供 next_round 的 delta 账本
 
-        n_needs = sum(len(e.needs) for e in entities)
-        n_rules = sum(len(e.rules) for e in entities)
+        # 工作副本（SoA 平行数组，3.3）：
+        #   attrs 需复制（交换会修改）；needs/rules 只读，复用引用（不再克隆 Need/Rule/Person）
+        n_entities = len(self.persons)
+        ids = [p.id for p in self.persons]
+        names = [p.name for p in self.persons]
+        attrs = [dict(p.attrs) for p in self.persons]
+        needs_list = [p.needs for p in self.persons]
+        rules_list = [p.rules for p in self.persons]
+        before_attrs = [dict(a) for a in attrs] if verbose else None
+
+        n_needs = sum(len(nl) for nl in needs_list)
+        n_rules = sum(len(rl) for rl in rules_list)
         out = ["═══ 交换计算 ═══"]
         if verbose:
-            out.append("参与：" + "、".join(e.name for e in entities))
+            out.append("参与：" + "、".join(names))
             out.append("初始：")
-            for e in entities:
-                out.append(f"  {e.name}：{self._fmt_attrs(e.attrs)}")
+            for i in range(n_entities):
+                out.append(f"  {names[i]}：{self._fmt_attrs(attrs[i])}")
             out.append("")
         else:
-            out.append(f"参与：{len(entities)} 人 / {n_needs} 需求 / {n_rules} 挂牌")
+            out.append(f"参与：{n_entities} 人 / {n_needs} 需求 / {n_rules} 挂牌")
 
         # 需求收集 + 按资源分组（A3：双指针扫描的核心）
-        needs_by_res: dict[str, list[tuple[Person, float]]] = {}
-        for A in entities:
-            for n in A.needs:
-                needs_by_res.setdefault(n.key, []).append((A, float(n.amount)))
+        needs_by_res: dict[str, list[tuple[int, float]]] = {}
+        for i in range(n_entities):
+            for nd in needs_list[i]:
+                needs_by_res.setdefault(nd.key, []).append((i, float(nd.amount)))
 
-        # 卖家索引：资源 → [(卖方, 规则), ...]，按 rate 升序预排序
-        # 同一卖家的多 ask 通过 seller.attrs[res] 实时维护库存，自然同步
-        sellers_by_res: dict[str, list[tuple[Person, Rule, int]]] = {}
+        # 卖家索引：资源 → [(卖方索引, 规则), ...]，按 rate 升序预排序
+        # 同一卖家的多 ask 通过 attrs[i][res] 实时维护库存，自然同步
+        sellers_by_res: dict[str, list[tuple[int, Rule, int]]] = {}
         rule_listed: dict[tuple[int, int], float] = {}   # (person_id, rule_idx) -> 挂牌时库存
         rule_sold: dict[tuple[int, int], float] = {}     # (person_id, rule_idx) -> 本回合成交量
-        for B in entities:
-            for idx, rule in enumerate(B.rules):
+        for i in range(n_entities):
+            for idx, rule in enumerate(rules_list[i]):
                 if rule.rate <= 0:
                     continue
-                sellers_by_res.setdefault(rule.sell, []).append((B, rule, idx))
-                rule_listed[(B.id, idx)] = float(B.attrs.get(rule.sell, 0))
+                sellers_by_res.setdefault(rule.sell, []).append((i, rule, idx))
+                rule_listed[(ids[i], idx)] = float(attrs[i].get(rule.sell, 0))
         for lst in sellers_by_res.values():
             lst.sort(key=lambda x: x[1].rate)
 
@@ -923,12 +938,12 @@ class Simulation:
                 seller_idx = 0
                 n_sellers = len(sellers)
 
-                for A, amount in buyers:
-                    stat["buyers"].add(A.id)
+                for a_idx, amount in buyers:
+                    stat["buyers"].add(ids[a_idx])
                     stat["demand"] += amount
 
                     if verbose:
-                        out.append(f"[{A.name}] 买 {res}×{fmt_num(amount)}")
+                        out.append(f"[{names[a_idx]}] 买 {res}×{fmt_num(amount)}")
                     if amount <= 0:
                         if verbose:
                             out.append("  → 购买量为 0，跳过")
@@ -936,17 +951,17 @@ class Simulation:
 
                     remaining = amount
                     while remaining > 0 and seller_idx < n_sellers:
-                        B, rule, idx = sellers[seller_idx]
-                        if B is A:
+                        b_idx, rule, idx = sellers[seller_idx]
+                        if b_idx == a_idx:
                             seller_idx += 1
                             continue
-                        inv = float(B.attrs.get(res, 0))
+                        inv = float(attrs[b_idx].get(res, 0))
                         if inv <= 0:
                             seller_idx += 1
                             continue
                         pay_res = rule.buy
                         rate = rule.rate
-                        a_pay = float(A.attrs.get(pay_res, 0))
+                        a_pay = float(attrs[a_idx].get(pay_res, 0))
                         if a_pay <= 0:
                             if verbose:
                                 out.append(f"  ✗ 无{pay_res}支付")
@@ -967,24 +982,25 @@ class Simulation:
                         _ta = trade_agg.setdefault(res, {"qty": 0.0, "pay": {}, "sellers": set()})
                         _ta["qty"] += q
                         _ta["pay"][pay_res] = _ta["pay"].get(pay_res, 0.0) + pay
-                        _ta["sellers"].add(B.id)
-                        A.attrs[pay_res] = a_pay - pay
-                        A.attrs[res] = float(A.attrs.get(res, 0)) + q
-                        B.attrs[res] = inv - q
-                        B.attrs[pay_res] = float(B.attrs.get(pay_res, 0)) + seller_gets
-                        rule_sold[(B.id, idx)] = rule_sold.get((B.id, idx), 0.0) + q
+                        _ta["sellers"].add(ids[b_idx])
+                        attrs[a_idx][pay_res] = a_pay - pay
+                        attrs[a_idx][res] = float(attrs[a_idx].get(res, 0)) + q
+                        attrs[b_idx][res] = inv - q
+                        attrs[b_idx][pay_res] = float(attrs[b_idx].get(pay_res, 0)) + seller_gets
+                        rule_sold[(ids[b_idx], idx)] = rule_sold.get((ids[b_idx], idx), 0.0) + q
                         self.government.collect(pay_res, tax)
+                        self._last_tax[pay_res] = self._last_tax.get(pay_res, 0.0) + tax
                         remaining -= q
 
-                        stat["sellers"].add(B.id)
+                        stat["sellers"].add(ids[b_idx])
                         stat["trades"] += 1
                         stat["volume"] += q
                         stat["met"] += q
 
                         if verbose:
-                            out.append(f"  ✓ {B.name} 成交 {fmt_num(q)}，付 {fmt_num(pay)}{pay_res}（税 {fmt_num(tax)}，@{fmt_num(rate)}）")
+                            out.append(f"  ✓ {names[b_idx]} 成交 {fmt_num(q)}，付 {fmt_num(pay)}{pay_res}（税 {fmt_num(tax)}，@{fmt_num(rate)}）")
                         trades.append((
-                            A.name, B.name, res,
+                            names[a_idx], names[b_idx], res,
                             q, pay, pay_res, rate, tax,
                         ))
 
@@ -1047,12 +1063,12 @@ class Simulation:
         if verbose:
             out.append("")
             out.append("── 最终状态 ──")
-            for e, b in zip(entities, before_attrs):
-                out.append(f"  {e.name}：{self._fmt_attrs_diff(e.attrs, b)}")
+            for i in range(n_entities):
+                out.append(f"  {names[i]}：{self._fmt_attrs_diff(attrs[i], before_attrs[i])}")
 
-        # 写回 persons（顺序严格对应）
-        for i, e in enumerate(entities):
-            self.persons[i].attrs = dict(e.attrs)
+        # 写回 persons（顺序严格对应）：attrs 已是独立副本，直接接管，无需再复制
+        for i in range(n_entities):
+            self.persons[i].attrs = attrs[i]
 
         # 自适应调价（轻量价格发现）：按本回合成交率反馈调整每个挂牌的 rate
         # fill = 成交量 / 挂牌库存；卖光(fill=1)→涨价，滞销(fill=0)→降价
