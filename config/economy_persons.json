@@ -17,6 +17,7 @@
       "canReproduce": true,
       "reproThresholdMult": 12.0,
       "reproInheritMult": 3.0,
+      "reproInheritRatio": 0.5,
       "attrs": {
         "食物": 50.0,
         "劳动力": 10.0
@@ -33,7 +34,11 @@
           "buy": "钱",
           "rate": 2.0
         }
-      ]
+      ],
+      "birthRound": null,
+      "dependent": true,
+      "weanMinRounds": null,
+      "weanMaxRounds": null
     },
     {
       "id": 5,
@@ -50,6 +55,7 @@
       "canReproduce": true,
       "reproThresholdMult": 2.0,
       "reproInheritMult": 1.0,
+      "reproInheritRatio": 0.5,
       "attrs": {
         "钱": 100.0,
         "食物": 20.0
@@ -66,7 +72,11 @@
           "buy": "钱",
           "rate": 1.0
         }
-      ]
+      ],
+      "birthRound": null,
+      "dependent": true,
+      "weanMinRounds": null,
+      "weanMaxRounds": null
     },
     {
       "id": 6,
@@ -78,11 +88,12 @@
       },
       "income": {
         "res": "钱",
-        "amount": 100.0
+        "amount": 1000.0
       },
       "canReproduce": true,
-      "reproThresholdMult": 100.0,
+      "reproThresholdMult": 30.0,
       "reproInheritMult": 1.0,
+      "reproInheritRatio": 0.5,
       "attrs": {
         "钱": 100.0,
         "劳动力": 100.0
@@ -99,8 +110,12 @@
           "buy": "劳动力",
           "rate": 1.0
         }
-      ]
+      ],
+      "birthRound": null,
+      "dependent": true,
+      "weanMinRounds": null,
+      "weanMaxRounds": null
     }
   ],
-  "exportedAt": "2026-09-04T15:28:16.136493+00:00"
+  "exportedAt": "2026-09-07T13:03:56.098172+00:00"
 }
