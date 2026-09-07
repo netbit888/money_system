@@ -33,9 +33,14 @@ def person_to_dict(p: Person) -> dict:
         "canReproduce": p.canReproduce,
         "reproThresholdMult": p.reproThresholdMult,
         "reproInheritMult": p.reproInheritMult,
+        "reproInheritRatio": p.reproInheritRatio,
         "attrs": dict(p.attrs),
         "needs": [{"key": n.key, "amount": n.amount} for n in p.needs],
         "rules": [{"sell": r.sell, "buy": r.buy, "rate": r.rate} for r in p.rules],
+        "birthRound": p.birthRound,
+        "dependent": p.dependent,
+        "weanMinRounds": p.weanMinRounds,
+        "weanMaxRounds": p.weanMaxRounds,
     }
 
 
@@ -46,6 +51,9 @@ def defaults_to_dict(d: DefaultSettings) -> dict:
         "canReproduce": d.canReproduce,
         "reproThresholdMult": d.reproThresholdMult,
         "reproInheritMult": d.reproInheritMult,
+        "reproInheritRatio": d.reproInheritRatio,
+        "weanMinRounds": d.weanMinRounds,
+        "weanMaxRounds": d.weanMaxRounds,
         "attrs": dict(d.attrs),
         "needs": [{"key": n.key, "amount": n.amount} for n in d.needs],
         "rules": [{"sell": r.sell, "buy": r.buy, "rate": r.rate} for r in d.rules],
@@ -77,9 +85,14 @@ def person_from_dict(d: dict) -> Person:
         canReproduce=d.get("canReproduce", True),
         reproThresholdMult=float(d.get("reproThresholdMult", 2.0)),
         reproInheritMult=float(d.get("reproInheritMult", 1.0)),
+        reproInheritRatio=float(d.get("reproInheritRatio", 0.5)),
         attrs={k: float(v) for k, v in (d.get("attrs") or {}).items()},
         needs=[Need(n["key"], float(n["amount"])) for n in (d.get("needs") or [])],
         rules=[norm_ask(r) for r in (d.get("rules") or [])],
+        birthRound=(int(d["birthRound"]) if d.get("birthRound") is not None else None),
+        dependent=bool(d.get("dependent", True)),
+        weanMinRounds=(int(d["weanMinRounds"]) if d.get("weanMinRounds") is not None else None),
+        weanMaxRounds=(int(d["weanMaxRounds"]) if d.get("weanMaxRounds") is not None else None),
     )
 
 
@@ -92,6 +105,9 @@ def defaults_from_dict(d: dict) -> DefaultSettings:
         canReproduce=d.get("canReproduce", True),
         reproThresholdMult=float(d.get("reproThresholdMult", 2.0)),
         reproInheritMult=float(d.get("reproInheritMult", 1.0)),
+        reproInheritRatio=float(d.get("reproInheritRatio", 0.5)),
+        weanMinRounds=int(d.get("weanMinRounds", 3)),
+        weanMaxRounds=int(d.get("weanMaxRounds", 8)),
         attrs={k: float(v) for k, v in (d.get("attrs") or {}).items()},
         needs=[Need(n["key"], float(n["amount"])) for n in (d.get("needs") or [])],
         rules=[norm_ask(r) for r in (d.get("rules") or [])],
@@ -307,6 +323,7 @@ class Handler(BaseHTTPRequestHandler):
                 src = body if isinstance(body, dict) else {"persons": body}
                 sim.persons = [person_from_dict(p) for p in src.get("persons", [])]
                 sim.next_id = max((p.id for p in sim.persons), default=0) + 1
+                sim._fill_missing_birth_round()
                 self._json({"ok": True, "count": len(sim.persons)})
                 return
 

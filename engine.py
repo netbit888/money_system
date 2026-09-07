@@ -43,9 +43,18 @@ class Person:
     canReproduce: bool = True
     reproThresholdMult: float = 2.0   # 繁殖阈值倍数（个体级，可独立调整）
     reproInheritMult: float = 1.0     # 子代继承倍数（个体级，可独立调整）
+    # 子代继承非代谢资源的比例：从母体转移（母减子增），不是复制。
+    # 0=白手起家，1=母体非代谢资源全部给子代。这是保证资源守恒的关键字段。
+    reproInheritRatio: float = 0.5
     attrs: dict[str, float] = field(default_factory=dict)
     needs: list[Need] = field(default_factory=list)
     rules: list[Rule] = field(default_factory=list)
+    # —— 抚养与断乳 ——
+    birthRound: int | None = None   # 出生回合（原始个体为 None）
+    dependent: bool = True          # 是否仍依赖母体接受抚养；断乳后置 False
+    # 个体级养育期覆盖（None = 继承 DefaultSettings）；繁殖时传给子代
+    weanMinRounds: int | None = None
+    weanMaxRounds: int | None = None
 
 
 @dataclass
@@ -55,7 +64,10 @@ class DefaultSettings:
     income: Metabolism
     canReproduce: bool = True
     reproThresholdMult: float = 2.0   # 繁殖阈值倍数：代谢资源 > reproThresholdMult × 代谢值 → 繁殖
-    reproInheritMult: float = 1.0     # 子代继承倍数：继承 reproInheritMult × 代谢值
+    reproInheritMult: float = 1.0     # 子代继承倍数：继承 min(reproInheritMult × 代谢值, 母体付出)
+    reproInheritRatio: float = 0.5    # 子代继承非代谢资源的比例（从母体转移，保证守恒）
+    weanMinRounds: int = 3            # 最小养育期：出生后至少 N 回合才允许断乳
+    weanMaxRounds: int = 8            # 最大养育期：到点强制断乳（富裕度不达标也独立）
     attrs: dict[str, float] = field(default_factory=dict)
     needs: list[Need] = field(default_factory=list)
     rules: list[Rule] = field(default_factory=list)
@@ -306,75 +318,131 @@ class Simulation:
             dead_ids = {p.id for p, _r, _a in dead}
             self.persons = [p for p in self.persons if p.id not in dead_ids]
 
-        # 5. 繁殖检查：代谢资源 > 2×代谢值 → 克隆子代
+        # 5. 繁殖检查：代谢资源 > 阈值×代谢值 → 转移资源产生子代
+        #    守恒规则：母体付出 cost，子代最多获得 cost（差额为生育损耗）；
+        #    非代谢资源按 reproInheritRatio 从母体【转移】而非复制。
         born = []
         reproducers = [p for p in self.persons if p.canReproduce]
         for p in reproducers:
             m = self._norm_person_metabolism(p)
+            amount = m.amount
+            if amount <= 0:
+                continue                               # 代谢为 0 → 阈值为 0 → 禁止繁殖（防指数爆炸）
             current = float(p.attrs.get(m.res, 0))
-            threshold = m.amount * p.reproThresholdMult
-            if current > threshold:
-                cost = threshold                  # 母体消耗
-                inherit = m.amount * p.reproInheritMult  # 子代继承量
-                p.attrs[m.res] = current - cost
-                child_id = self.next_id
-                self.next_id += 1
-                child = Person(
-                    id=child_id,
-                    parentId=p.id,                                # 永久依赖母体
-                    name=f"{get_base_name(p.name)}#{child_id}",  # 基础名+子代id（避免链式叠加）
-                    metabolism=Metabolism(m.res, m.amount),
-                    income=self._norm_person_income(p),          # 克隆母体收入
-                    canReproduce=p.canReproduce,
-                    reproThresholdMult=p.reproThresholdMult,
-                    reproInheritMult=p.reproInheritMult,
-                    attrs=dict(p.attrs),                          # 克隆其他资源（母体扣减后状态）
-                    needs=[Need(n.key, n.amount) for n in p.needs],
-                    rules=[norm_ask(r) for r in p.rules],
-                )
-                child.attrs[m.res] = inherit     # 子代代谢资源 = 继承量
-                self.persons.append(child)
-                born.append((p, child, m.res, cost, inherit))
+            threshold = amount * p.reproThresholdMult
+            if current <= threshold:
+                continue
+            cost = threshold                                    # 母体付出
+            inherit = min(amount * p.reproInheritMult, cost)    # 夹紧：子代获得不得超过母体付出
+            ratio = min(1.0, max(0.0, p.reproInheritRatio))
+            # 非代谢资源：从母体转移（母减子增）
+            child_attrs: dict[str, float] = {}
+            for k, v in list(p.attrs.items()):
+                v = float(v)
+                if k == m.res or v <= 0:
+                    continue
+                give = v * ratio
+                child_attrs[k] = give
+                p.attrs[k] = v - give
+            p.attrs[m.res] = current - cost                      # 母体付出生育成本
+            child_attrs[m.res] = inherit
+            loss = cost - inherit                                # 生育损耗：退出系统
+            child_id = self.next_id
+            self.next_id += 1
+            child = Person(
+                id=child_id,
+                parentId=p.id,                                # 永久依赖母体
+                name=f"{get_base_name(p.name)}#{child_id}",  # 基础名+子代id（避免链式叠加）
+                metabolism=Metabolism(m.res, amount),
+                income=self._norm_person_income(p),          # 克隆母体收入
+                canReproduce=p.canReproduce,
+                reproThresholdMult=p.reproThresholdMult,
+                reproInheritMult=p.reproInheritMult,
+                reproInheritRatio=ratio,
+                attrs=child_attrs,
+                needs=[Need(n.key, n.amount) for n in p.needs],
+                rules=[norm_ask(r) for r in p.rules],
+                birthRound=self.round,
+                dependent=True,
+                weanMinRounds=p.weanMinRounds,
+                weanMaxRounds=p.weanMaxRounds,
+            )
+            self.persons.append(child)
+            born.append((p, child, m.res, cost, inherit, loss))
         n_born = len(born)
         if verbose and born:
             out.append("")
             out.append("── 繁殖 ──")
-            for parent, child, res, cost, inherit in born:
+            for parent, child, res, cost, inherit, loss in born:
                 out.append(
                     f"  ✓ {parent.name} → {child.name}"
-                    f"（母体-{fmt_num(cost)}{res}，子代+{fmt_num(inherit)}{res}）"
+                    f"（母体-{fmt_num(cost)}{res}，子代+{fmt_num(inherit)}{res}，"
+                    f"损耗 {fmt_num(loss)}{res}）"
                 )
 
-        # 6. 抚养阶段：母体给每个子代转移代谢资源（量=子代代谢值）
+        # 6. 断乳：子代富裕到能自繁殖即解除母体依赖（抚养前判定）。
+        #    否则终身抚养会让子代永不死亡（每回合收支相抵），选择压力完全失效。
+        # 两条路径：①富裕到能自繁殖 → 提前独立；②超过最大养育期 → 强制独立。
+        # 仅有 ① 时实操中几乎不可达（子代财富常堆积在非代谢资源上），
+        # ②保证母体不会被终身拖累，也让子代真正暴露在死亡压力下。
+        weaned = []
+        for c in self.persons:
+            if c.parentId is None or not c.dependent:
+                continue
+            cm = self._norm_person_metabolism(c)
+            if cm.amount <= 0:
+                continue
+            # 个体级养育期优先，未设置则继承全局
+            min_r = c.weanMinRounds if c.weanMinRounds is not None else self.defaults.weanMinRounds
+            max_r = c.weanMaxRounds if c.weanMaxRounds is not None else self.defaults.weanMaxRounds
+            min_rounds = max(0, int(min_r))
+            max_rounds = max(min_rounds, int(max_r))
+            if c.birthRound is not None:
+                age = self.round - c.birthRound
+                if age < min_rounds:
+                    continue                       # 未过最小养育期
+                if age >= max_rounds:
+                    c.dependent = False            # 到点强制独立
+                    weaned.append(c)
+                    continue
+            if float(c.attrs.get(cm.res, 0)) > cm.amount * c.reproThresholdMult:
+                c.dependent = False                # 富裕到能自繁殖，提前独立
+                weaned.append(c)
+        if verbose and weaned:
+            out.append("")
+            out.append("── 断乳 ──")
+            for c in weaned:
+                out.append(f"  ⟩ {c.name} 已独立（脱离母体抚养）")
+
+        # 7. 抚养阶段：母体给每个仍依赖的子代转移其【代谢所需资源】（量=子代代谢值）
         transfers = []
         failures = []
         # 预建 parentId → children 索引（O(N)，避免每父一次全表扫描的 O(N²)）
         children_by_parent: dict[int, list[Person]] = {}
         for c in self.persons:
-            if c.parentId is not None:
+            if c.parentId is not None and c.dependent:
                 children_by_parent.setdefault(c.parentId, []).append(c)
         for parent in self.persons:
             children = children_by_parent.get(parent.id)
             if not children:
                 continue
-            pm = self._norm_person_metabolism(parent)
-            remaining = float(parent.attrs.get(pm.res, 0))
             for child in children:
                 cm = self._norm_person_metabolism(child)
+                need_res = cm.res          # 子代需要的资源（不是母体的代谢资源）
                 need = cm.amount
+                if need <= 0:
+                    continue
+                remaining = float(parent.attrs.get(need_res, 0))
                 if remaining >= need:
-                    parent.attrs[pm.res] = float(parent.attrs.get(pm.res, 0)) - need
-                    child.attrs[cm.res] = float(child.attrs.get(cm.res, 0)) + need
-                    remaining -= need
-                    transfers.append((parent, child, cm.res, need, False))
+                    parent.attrs[need_res] = remaining - need
+                    child.attrs[need_res] = float(child.attrs.get(need_res, 0)) + need
+                    transfers.append((parent, child, need_res, need, False))
                 elif remaining > 0:
-                    partial = remaining
-                    parent.attrs[pm.res] = float(parent.attrs.get(pm.res, 0)) - partial
-                    child.attrs[cm.res] = float(child.attrs.get(cm.res, 0)) + partial
-                    remaining = 0
-                    transfers.append((parent, child, cm.res, partial, True))
+                    parent.attrs[need_res] = 0.0
+                    child.attrs[need_res] = float(child.attrs.get(need_res, 0)) + remaining
+                    transfers.append((parent, child, need_res, remaining, True))
                 else:
-                    failures.append((parent, child, cm.res))
+                    failures.append((parent, child, need_res))
         n_transfers = len(transfers)
         n_failures = len(failures)
         if verbose and (transfers or failures):
@@ -406,7 +474,7 @@ class Simulation:
             sign = "+" if delta_pop >= 0 else ""
             out.append(f"人口：{n_before} → {n_after}（{sign}{delta_pop}）")
             out.append(
-                f"死亡：{n_dead} / 繁殖：{n_born} / "
+                f"死亡：{n_dead} / 繁殖：{n_born} / 断乳：{len(weaned)} / "
                 f"抚养：{n_transfers + n_failures} 笔（成功 {n_transfers} / 失败 {n_failures}）"
             )
 
@@ -696,6 +764,7 @@ class Simulation:
         try:
             self.persons = import_persons(ppath, self.defaults)
             self.next_id = max((p.id for p in self.persons), default=0) + 1
+            self._fill_missing_birth_round()
             msgs.append(
                 f"个体列表已从 config/economy_persons.json 加载（个体数：{len(self.persons)}）"
             )
@@ -742,6 +811,7 @@ class Simulation:
             canReproduce=self.defaults.canReproduce,
             reproThresholdMult=self.defaults.reproThresholdMult,
             reproInheritMult=self.defaults.reproInheritMult,
+            reproInheritRatio=self.defaults.reproInheritRatio,
             attrs=dict(self.defaults.attrs),
             needs=[Need(n.key, n.amount) for n in self.defaults.needs],
             rules=[norm_ask(r) for r in self.defaults.rules],
@@ -755,6 +825,12 @@ class Simulation:
 
     def find(self, pid: int) -> Person | None:
         return next((p for p in self.persons if p.id == pid), None)
+
+    def _fill_missing_birth_round(self) -> None:
+        """导入的个体若缺少 birthRound，用当前回合补上，养育期从导入时刻起算。"""
+        for p in self.persons:
+            if p.parentId is not None and p.birthRound is None:
+                p.birthRound = self.round
 
     # ===================== 状态查询（前端友好的精简摘要）=====================
     def summary(self) -> dict:
@@ -801,9 +877,14 @@ def _person_to_dict(p: Person) -> dict:
         "canReproduce": p.canReproduce,
         "reproThresholdMult": p.reproThresholdMult,
         "reproInheritMult": p.reproInheritMult,
+        "reproInheritRatio": p.reproInheritRatio,
         "attrs": dict(p.attrs),
         "needs": [{"key": n.key, "amount": n.amount} for n in p.needs],
         "rules": [{"sell": r.sell, "buy": r.buy, "rate": r.rate} for r in p.rules],
+        "birthRound": p.birthRound,
+        "dependent": p.dependent,
+        "weanMinRounds": p.weanMinRounds,
+        "weanMaxRounds": p.weanMaxRounds,
     }
 
 
@@ -817,9 +898,14 @@ def _person_from_dict(d: dict, defaults: DefaultSettings) -> Person:
         canReproduce=d.get("canReproduce", True),
         reproThresholdMult=float(d.get("reproThresholdMult", defaults.reproThresholdMult)),
         reproInheritMult=float(d.get("reproInheritMult", defaults.reproInheritMult)),
+        reproInheritRatio=float(d.get("reproInheritRatio", defaults.reproInheritRatio)),
         attrs={k: float(v) for k, v in (d.get("attrs") or {}).items()},
         needs=[Need(n["key"], float(n["amount"])) for n in (d.get("needs") or [])],
         rules=[norm_ask(r) for r in (d.get("rules") or [])],
+        birthRound=(int(d["birthRound"]) if d.get("birthRound") is not None else None),
+        dependent=bool(d.get("dependent", True)),
+        weanMinRounds=(int(d["weanMinRounds"]) if d.get("weanMinRounds") is not None else None),
+        weanMaxRounds=(int(d["weanMaxRounds"]) if d.get("weanMaxRounds") is not None else None),
     )
 
 
@@ -850,6 +936,7 @@ def export_defaults(path: str, defaults: DefaultSettings, government: Government
             "canReproduce": defaults.canReproduce,
             "reproThresholdMult": defaults.reproThresholdMult,
             "reproInheritMult": defaults.reproInheritMult,
+            "reproInheritRatio": defaults.reproInheritRatio,
             "attrs": dict(defaults.attrs),
             "needs": [{"key": n.key, "amount": n.amount} for n in defaults.needs],
             "rules": [{"sell": r.sell, "buy": r.buy, "rate": r.rate} for r in defaults.rules],
@@ -882,6 +969,7 @@ def import_defaults(path: str) -> DefaultSettings:
         canReproduce=src.get("canReproduce", True),
         reproThresholdMult=float(src.get("reproThresholdMult", 2.0)),
         reproInheritMult=float(src.get("reproInheritMult", 1.0)),
+        reproInheritRatio=float(src.get("reproInheritRatio", 0.5)),
         attrs={k: float(v) for k, v in (src.get("attrs") or {}).items()},
         needs=[Need(n["key"], float(n["amount"])) for n in (src.get("needs") or [])],
         rules=[norm_ask(r) for r in (src.get("rules") or [])],

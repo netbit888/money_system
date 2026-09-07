@@ -58,10 +58,22 @@
     </div>
     <div id="reproParams" style="margin-top:4px;">
       <div class="row" style="margin:4px 0;">
-        <label style="font-size:13px; white-space:nowrap;">代谢资源 &gt; <input id="dReproTh" type="number" step="0.1" min="0.5" placeholder="2.0" style="width:60px;" onchange="updateDefaultRepro()"> × 代谢值 → 繁殖</label>
+        <label style="font-size:13px; white-space:nowrap;">代谢资源 &gt; <input id="dReproTh" type="number" step="0.1" min="0.5" placeholder="2.0" style="width:60px;" onchange="updateDefaultRepro()"> × 代谢值 → 繁殖（母体付出）</label>
       </div>
       <div class="row" style="margin:4px 0;">
-        <label style="font-size:13px; white-space:nowrap;">子代继承 <input id="dReproInherit" type="number" step="0.1" min="0.1" placeholder="1.0" style="width:60px;" onchange="updateDefaultRepro()"> × 代谢值</label>
+        <label style="font-size:13px; white-space:nowrap;">子代获得代谢资源 <input id="dReproInherit" type="number" step="0.1" min="0.1" placeholder="1.0" style="width:60px;" onchange="updateDefaultRepro()"> × 代谢值（不超过母体付出）</label>
+      </div>
+      <div class="row" style="margin:4px 0;">
+        <label style="font-size:13px; white-space:nowrap;">子代继承非代谢资源 <input id="dReproRatio" type="number" step="0.05" min="0" max="1" placeholder="0.5" style="width:70px;" onchange="updateDefaultRepro()"> （占比，从母体转移）</label>
+      </div>
+      <div class="row" style="margin:4px 0;">
+        <label style="font-size:13px; white-space:nowrap;">最小养育期 <input id="dWeanMin" type="number" step="1" min="0" placeholder="3" style="width:60px;" onchange="updateDefaultWean()"> 回合（之后才允许断乳）</label>
+      </div>
+      <div class="row" style="margin:4px 0;">
+        <label style="font-size:13px; white-space:nowrap;">最大养育期 <input id="dWeanMax" type="number" step="1" min="1" placeholder="8" style="width:60px;" onchange="updateDefaultWean()"> 回合（到点强制断乳）</label>
+      </div>
+      <div class="row" style="margin:4px 0;">
+        <span class="small" id="dReproPreview"></span>
       </div>
     </div>
 
@@ -183,6 +195,10 @@ function renderDefaults() {
   document.getElementById("reproParams").style.display = reproEnable ? "" : "none";
   document.getElementById("dReproTh").value = defaultSettings.reproThresholdMult ?? 2.0;
   document.getElementById("dReproInherit").value = defaultSettings.reproInheritMult ?? 1.0;
+  document.getElementById("dReproRatio").value = defaultSettings.reproInheritRatio ?? 0.5;
+  document.getElementById("dWeanMin").value = defaultSettings.weanMinRounds ?? 3;
+  document.getElementById("dWeanMax").value = defaultSettings.weanMaxRounds ?? 8;
+  renderDefaultReproPreview();
   renderDefaultAttrs();
   renderDefaultNeeds();
   renderDefaultRules();
@@ -270,6 +286,7 @@ function updateDefaultMeta() {
   const amt = parseFloat(document.getElementById("dMetaAmt").value);
   if (isNaN(amt) || amt < 0) { alert("代谢数量必须 ≥0"); return; }
   defaultSettings.metabolism = { res, amount: amt };
+  renderDefaultReproPreview();
   putDefaults();
 }
 function updateDefaultInc() {
@@ -288,11 +305,57 @@ function toggleReproParams() {
 function updateDefaultRepro() {
   const th = parseFloat(document.getElementById("dReproTh").value);
   const inherit = parseFloat(document.getElementById("dReproInherit").value);
-  if (isNaN(th) || th < 0.5) { alert("阈值倍数必须 ≥0.5"); return; }
-  if (isNaN(inherit) || inherit < 0.1) { alert("继承倍数必须 ≥0.1"); return; }
+  const ratio = parseFloat(document.getElementById("dReproRatio").value);
+  if (isNaN(th) || th < 0.5) { alert("阈值倍数必须 ≥0.5"); renderDefaults(); return; }
+  if (isNaN(inherit) || inherit < 0.1) { alert("继承倍数必须 ≥0.1"); renderDefaults(); return; }
+  if (isNaN(ratio) || ratio < 0 || ratio > 1) { alert("继承比例必须在 0~1 之间"); renderDefaults(); return; }
   defaultSettings.reproThresholdMult = th;
   defaultSettings.reproInheritMult = inherit;
+  defaultSettings.reproInheritRatio = ratio;
+  renderDefaultReproPreview();
   putDefaults();
+}
+
+function updateDefaultWean() {
+  const mn = parseInt(document.getElementById("dWeanMin").value);
+  const mx = parseInt(document.getElementById("dWeanMax").value);
+  if (isNaN(mn) || mn < 0) { alert("最小养育期必须 ≥0"); renderDefaults(); return; }
+  if (isNaN(mx) || mx < 1) { alert("最大养育期必须 ≥1"); renderDefaults(); return; }
+  if (mx < mn) { alert("最大养育期不能小于最小养育期"); renderDefaults(); return; }
+  defaultSettings.weanMinRounds = mn;
+  defaultSettings.weanMaxRounds = mx;
+  putDefaults();
+}
+
+// 繁殖参数效果预览：把三个倍数换算成"一次繁殖实际发生什么"
+function renderDefaultReproPreview() {
+  const box = document.getElementById("dReproPreview");
+  if (!box) return;
+  const thEl = document.getElementById("dReproTh");
+  const inhEl = document.getElementById("dReproInherit");
+  const ratioEl = document.getElementById("dReproRatio");
+  if (!thEl || !inhEl || !ratioEl) return;
+  const th = parseFloat(thEl.value);
+  const inh = parseFloat(inhEl.value);
+  const ratio = parseFloat(ratioEl.value);
+  if (isNaN(th) || isNaN(inh) || isNaN(ratio)) { box.textContent = ""; return; }
+  const amount = Number(defaultSettings.metabolism.amount) || 0;
+  const resName = defaultSettings.metabolism.res || "?";
+  if (amount <= 0) {
+    box.style.color = "#c00";
+    box.textContent = "代谢值为 0，新建个体不会繁殖";
+    return;
+  }
+  const actual = Math.min(inh, th);          // 引擎会把继承量夹紧到母体付出
+  const cost = th * amount;
+  const gain = actual * amount;
+  const loss = cost - gain;
+  const clamped = inh > th + 1e-9;
+  box.style.color = clamped ? "#c00" : "#666";
+  box.textContent =
+    `效果预览：每次繁殖母体付出 ${fmtNum(cost)}${resName}，其中 ${fmtNum(gain)} 给子代、` +
+    `${fmtNum(loss)} 为生育损耗；非代谢资源转移 ${(ratio * 100).toFixed(0)}% 给子代。` +
+    (clamped ? `　继承倍数 ${fmtNum(inh)} 超过母体付出 ${fmtNum(th)}，实际按 ${fmtNum(actual)} 生效` : "");
 }
 function updateDefaultAttr(k, v) { defaultSettings.attrs[k] = parseFloat(v) || 0; putDefaults(); }
 function deleteDefaultAttr(k) { delete defaultSettings.attrs[k]; renderDefaultAttrs(); putDefaults(); }
@@ -460,9 +523,16 @@ function renderDetail() {
   panel.style.display = "block";
 
   const parent = p.parentId ? persons.find(x => x.id === p.parentId) : null;
-  const parentLabel = p.parentId
-    ? `母体：${parent ? parent.name : '已死亡'}`
-    : '（无母体，原始个体）';
+  const parentName = parent ? parent.name : '已死亡';
+  let rearInfo = '';
+  if (p.parentId && p.dependent !== false && p.birthRound !== null && p.birthRound !== undefined) {
+    const maxR = (p.weanMaxRounds === null || p.weanMaxRounds === undefined)
+      ? (defaultSettings.weanMaxRounds ?? 8) : p.weanMaxRounds;
+    rearInfo = `（养育中 ${round - p.birthRound}/${maxR} 回合）`;
+  }
+  const parentLabel = !p.parentId
+    ? '（无母体，原始个体）'
+    : (p.dependent === false ? `母体：${parentName}（已独立）` : `母体：${parentName}${rearInfo}`);
 
   let html = `<div class="row" style="margin-bottom:8px; align-items:center;">
     <b>当前个体名字：</b>
@@ -492,6 +562,7 @@ function renderDetail() {
   const canRep = p.canReproduce !== false;
   const reproTh = p.reproThresholdMult ?? 2.0;
   const reproInh = p.reproInheritMult ?? 1.0;
+  const reproRatio = p.reproInheritRatio ?? 0.5;
   html += `<div class="row" style="margin-bottom:8px; align-items:center;">
     <b>允许繁殖：</b>
     <input type="checkbox" ${canRep ? 'checked' : ''} onchange="updatePersonCanReproduce(${p.id}, this.checked)" style="width:20px; height:20px; flex:0 0 auto;">
@@ -499,10 +570,27 @@ function renderDetail() {
   </div>`;
   if (canRep) {
     html += `<div class="row" style="margin-bottom:8px; margin-left:20px; align-items:center;">
-      <label style="font-size:13px; white-space:nowrap;">代谢资源 &gt; <input type="number" step="0.1" min="0.5" value="${reproTh}" onchange="updatePersonRepro(${p.id}, 'threshold', this.value)" style="width:60px;"> × 代谢值 → 繁殖</label>
+      <label style="font-size:13px; white-space:nowrap;">代谢资源 &gt; <input type="number" step="0.1" min="0.5" value="${reproTh}" onchange="updatePersonRepro(${p.id}, 'threshold', this.value)" style="width:60px;"> × 代谢值 → 繁殖（母体付出）</label>
     </div>`;
     html += `<div class="row" style="margin-bottom:8px; margin-left:20px; align-items:center;">
-      <label style="font-size:13px; white-space:nowrap;">子代继承 <input type="number" step="0.1" min="0.1" value="${reproInh}" onchange="updatePersonRepro(${p.id}, 'inherit', this.value)" style="width:60px;"> × 代谢值</label>
+      <label style="font-size:13px; white-space:nowrap;">子代获得代谢资源 <input type="number" step="0.1" min="0.1" value="${reproInh}" onchange="updatePersonRepro(${p.id}, 'inherit', this.value)" style="width:60px;"> × 代谢值</label>
+      <span class="small" id="pReproClamp_${p.id}" style="color:#c00; margin-left:8px;"></span>
+    </div>`;
+    html += `<div class="row" style="margin-bottom:8px; margin-left:20px; align-items:center;">
+      <label style="font-size:13px; white-space:nowrap;">子代继承非代谢资源 <input type="number" step="0.05" min="0" max="1" value="${reproRatio}" onchange="updatePersonRepro(${p.id}, 'ratio', this.value)" style="width:70px;"> （占比，从母体转移）</label>
+    </div>`;
+    const gWeanMin = defaultSettings.weanMinRounds ?? 3;
+    const gWeanMax = defaultSettings.weanMaxRounds ?? 8;
+    const pWeanMin = (p.weanMinRounds === null || p.weanMinRounds === undefined) ? "" : p.weanMinRounds;
+    const pWeanMax = (p.weanMaxRounds === null || p.weanMaxRounds === undefined) ? "" : p.weanMaxRounds;
+    html += `<div class="row" style="margin-bottom:8px; margin-left:20px; align-items:center;">
+      <label style="font-size:13px; white-space:nowrap;">子代养育期
+        <input type="number" step="1" min="0" value="${pWeanMin}" placeholder="继承" onchange="updatePersonWean(${p.id}, 'min', this.value)" style="width:60px;"> ~
+        <input type="number" step="1" min="1" value="${pWeanMax}" placeholder="继承" onchange="updatePersonWean(${p.id}, 'max', this.value)" style="width:60px;">
+        回合 <span class="small">（留空 = 继承全局 ${gWeanMin}~${gWeanMax}）</span></label>
+    </div>`;
+    html += `<div class="row" style="margin-bottom:8px; margin-left:20px;">
+      <span class="small" id="pReproPreview_${p.id}"></span>
     </div>`;
   }
 
@@ -564,6 +652,38 @@ function renderDetail() {
   </div>`;
 
   document.getElementById("detailContent").innerHTML = html;
+  // 预览内容单独填充（改代谢/繁殖参数时只更新该节点，不重建面板）
+  renderPersonReproPreview(p);
+}
+
+// 个体详情：刷新繁殖预览（含夹紧红字）。只改两个节点的文本，不重建 DOM。
+function renderPersonReproPreview(p) {
+  const box = document.getElementById(`pReproPreview_${p.id}`);
+  if (!box) return;
+  const clampBox = document.getElementById(`pReproClamp_${p.id}`);
+  const th = p.reproThresholdMult ?? 2.0;
+  const inh = p.reproInheritMult ?? 1.0;
+  const ratio = p.reproInheritRatio ?? 0.5;
+  const amount = Number(p.metabolism.amount) || 0;
+  const resName = p.metabolism.res || "?";
+  const actual = Math.min(inh, th);        // 引擎会把继承量夹紧到母体付出
+  const clamped = inh > th + 1e-9;
+  if (clampBox) {
+    clampBox.textContent = clamped
+      ? `实际 ${fmtNum(actual)}（已被母体付出 ${fmtNum(th)} 夹紧）` : "";
+  }
+  if (amount <= 0) {
+    box.style.color = "#c00";
+    box.textContent = "代谢值为 0，该个体不参与繁殖";
+    return;
+  }
+  const cost = th * amount;
+  const gain = actual * amount;
+  const loss = cost - gain;
+  box.style.color = clamped ? "#c00" : "#666";
+  box.textContent =
+    `效果预览：每次繁殖母体付出 ${fmtNum(cost)}${resName}，其中 ${fmtNum(gain)} 给子代、`
+    + `${fmtNum(loss)} 为生育损耗；非代谢资源转移 ${(ratio * 100).toFixed(0)}% 给子代。`;
 }
 
 // 个体属性编辑（修改本地缓存 + PUT 推送）
@@ -586,6 +706,7 @@ function updatePersonMetabolism(id, field, v) {
     if (isNaN(num) || num < 0) { alert("代谢数量必须为 ≥0 的数字，已恢复原值"); renderDetail(); return; }
     p.metabolism.amount = num;
   }
+  renderPersonReproPreview(p);
   putPerson(p);
 }
 function updatePersonIncome(id, field, v) {
@@ -613,12 +734,38 @@ function updatePersonRepro(id, field, v) {
   if (!p) return;
   const num = parseFloat(v);
   if (field === 'threshold') {
-    if (isNaN(num) || num < 0.5) { alert("阈值倍数必须 ≥0.5"); return; }
+    if (isNaN(num) || num < 0.5) { alert("阈值倍数必须 ≥0.5"); renderDetail(); return; }
     p.reproThresholdMult = num;
-  } else {
-    if (isNaN(num) || num < 0.1) { alert("继承倍数必须 ≥0.1"); return; }
+  } else if (field === 'inherit') {
+    if (isNaN(num) || num < 0.1) { alert("继承倍数必须 ≥0.1"); renderDetail(); return; }
     p.reproInheritMult = num;
+  } else {
+    if (isNaN(num) || num < 0 || num > 1) { alert("继承比例必须在 0~1 之间"); renderDetail(); return; }
+    p.reproInheritRatio = num;
   }
+  renderPersonReproPreview(p);
+  putPerson(p);
+}
+function updatePersonWean(id, field, v) {
+  const p = persons.find(x => x.id === id);
+  if (!p) return;
+  const raw = String(v).trim();
+  if (raw === "") {                       // 留空 = 继承全局养育期
+    if (field === 'min') p.weanMinRounds = null; else p.weanMaxRounds = null;
+    renderDetail();
+    putPerson(p);
+    return;
+  }
+  const num = parseInt(raw);
+  if (isNaN(num) || num < 0) { alert("养育期必须是 ≥0 的整数"); renderDetail(); return; }
+  if (field === 'min') {
+    p.weanMinRounds = num;
+    if (p.weanMaxRounds !== null && p.weanMaxRounds < num) p.weanMaxRounds = num;
+  } else {
+    p.weanMaxRounds = num;
+    if (p.weanMinRounds !== null && p.weanMinRounds > num) p.weanMinRounds = num;
+  }
+  renderDetail();
   putPerson(p);
 }
 function updatePersonAttr(id, k, v) {

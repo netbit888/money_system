@@ -79,9 +79,15 @@ function normalizePerson(p) {
     canReproduce: p.canReproduce !== false,
     reproThresholdMult: p.reproThresholdMult ?? 2.0,
     reproInheritMult: p.reproInheritMult ?? 1.0,
+    reproInheritRatio: p.reproInheritRatio ?? 0.5,
     attrs: p.attrs || {},
     needs: (p.needs || []).map(n => ({ key: n.key, amount: n.amount })),
-    rules: (p.rules || []).map(r => normAsk(r))
+    rules: (p.rules || []).map(r => normAsk(r)),
+    birthRound: p.birthRound ?? null,
+    dependent: p.dependent !== false,
+    // null = 继承基础设置里的全局养育期
+    weanMinRounds: (p.weanMinRounds === null || p.weanMinRounds === undefined) ? null : p.weanMinRounds,
+    weanMaxRounds: (p.weanMaxRounds === null || p.weanMaxRounds === undefined) ? null : p.weanMaxRounds
   };
 }
 
@@ -92,6 +98,9 @@ function normalizeDefaults(d) {
     canReproduce: d.canReproduce !== false,
     reproThresholdMult: d.reproThresholdMult ?? 2.0,
     reproInheritMult: d.reproInheritMult ?? 1.0,
+    reproInheritRatio: d.reproInheritRatio ?? 0.5,
+    weanMinRounds: d.weanMinRounds ?? 3,
+    weanMaxRounds: d.weanMaxRounds ?? 8,
     attrs: d.attrs || {},
     needs: (d.needs || []).map(n => ({ key: n.key, amount: n.amount })),
     rules: (d.rules || []).map(r => normAsk(r)),
@@ -137,13 +146,64 @@ function toggleHistoryChart() {
 }
 
 // ===================== 历史曲线（SVG 折线图）=====================
+// 可滑动时间窗口：只拉取 [end-window, end] 区间，避免回合数暴涨后全量绘制。
+let histWindow = 100;        // 窗口大小（回合）
+let histFollowLatest = true; // 跟随最新：滑块贴最右，自动跑时随回合滚动
+
+function _historyWrapVisible() {
+  const wrap = document.getElementById("historyChartWrap");
+  return wrap && wrap.style.display !== "none";
+}
+
+function updateHistRangeLabel(start, end) {
+  const el = document.getElementById("histRangeLabel");
+  if (el) el.textContent = `显示回合 ${start} ~ ${end}（共 ${historyData.length} 点）`;
+}
+
+function onHistWindowChange() {
+  const sel = document.getElementById("histWindow");
+  histWindow = parseInt(sel.value) || 100;
+  fetchHistoryAndRender();
+}
+
+function onHistFollowChange() {
+  const cb = document.getElementById("histFollow");
+  histFollowLatest = cb.checked;
+  if (histFollowLatest) {
+    const slider = document.getElementById("histPos");
+    if (slider) slider.value = round;
+  }
+  fetchHistoryAndRender();
+}
+
+function onHistSlider() {
+  // 用户拖动滑块 = 主动离开"跟随最新"，锁定到所选历史区间
+  histFollowLatest = false;
+  const cb = document.getElementById("histFollow");
+  if (cb) cb.checked = false;
+  fetchHistoryAndRender();
+}
+
 async function fetchHistoryAndRender() {
+  if (!_historyWrapVisible()) return;
   try {
-    const r = await fetch('/history?from=0');
+    const slider = document.getElementById("histPos");
+    if (slider) {
+      slider.max = Math.max(round, 1);
+      if (histFollowLatest) {
+        slider.value = round;
+      } else if (parseInt(slider.value) > round) {
+        slider.value = round;
+      }
+    }
+    const end = slider ? parseInt(slider.value) : round;
+    const start = Math.max(0, end - histWindow);
+    const r = await fetch(`/history?from=${start}&to=${end}`);
     if (!r.ok) throw new Error('获取历史失败');
     const j = await r.json();
     historyData = j.history || [];
     renderHistoryChart();
+    updateHistRangeLabel(start, end);
   } catch (e) {
     const box = document.getElementById("historyChart");
     if (box) box.innerHTML = `<i style="color:#c00;">${e.message}</i>`;
@@ -396,8 +456,55 @@ async function nextRound() {
     else renderPieChart();
     if (typeof renderDetail === 'function' && selectedId !== null) renderDetail();
     _refreshHistoryIfVisible();
-  } catch (e) { alert("下一回合失败：" + e.message); }
+  } catch (e) { alert("下一回合失败：" + e.message); if (_autoRunning) stopAuto(); }
   finally { _setBusy(false); }
+}
+
+// ===================== 自动运行（回合模块，前端驱动）=====================
+// 播放/暂停切换；每分钟回合数由 autoRate 输入控制，间隔 = 60000 / 速率。
+// 串行执行：等上一拍 nextRound 真正完成后，再排下一拍（递归 setTimeout，杜绝重叠）。
+let _autoRunning = false;
+let _autoTimer = null;
+
+function toggleAuto() {
+  if (_autoRunning) stopAuto();
+  else startAuto();
+}
+
+function updateAutoBtn() {
+  const btn = document.getElementById("autoBtn");
+  if (!btn) return;
+  if (_autoRunning) {
+    btn.textContent = "⏸ 暂停";
+    btn.style.background = "#e74c3c";
+  } else {
+    btn.textContent = "▶ 自动运行";
+    btn.style.background = "#5cb85c";
+  }
+}
+
+function startAuto() {
+  if (persons.length === 0) { alert("请先创建个体，再开始自动运行"); return; }
+  _autoRunning = true;
+  updateAutoBtn();
+  autoStep();
+}
+
+function stopAuto() {
+  _autoRunning = false;
+  if (_autoTimer) { clearTimeout(_autoTimer); _autoTimer = null; }
+  updateAutoBtn();
+}
+
+function autoStep() {
+  if (!_autoRunning) return;
+  nextRound().then(() => {
+    if (!_autoRunning) return;   // 执行期间已被暂停
+    let rate = parseFloat(document.getElementById("autoRate")?.value);
+    if (!isFinite(rate) || rate <= 0) rate = 60;
+    const interval = 60000 / rate;   // 实际速率受 nextRound 处理耗时限制
+    _autoTimer = setTimeout(autoStep, interval);
+  });
 }
 
 async function calculate() {

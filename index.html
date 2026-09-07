@@ -39,6 +39,8 @@
   <h2>回合</h2>
   <div style="margin-bottom:8px;">当前回合：<b id="roundNum">0</b> &nbsp;|&nbsp; 每回合时序：清除易腐资源 → 收入 → 交换（含税收抽取）→ 代谢 → 死亡/繁殖/抚养</div>
   <button class="btn-calc" data-lock="1" onclick="nextRound()">下一回合（含交换）</button>
+  <button id="autoBtn" class="btn-calc" onclick="toggleAuto()" style="background:#5cb85c;">▶ 自动运行</button>
+  <label class="small" style="margin-left:6px;">速度：<input id="autoRate" type="number" min="1" step="1" value="60" style="width:64px;"> 回合/分钟</label>
   <button class="btn-calc" data-lock="1" onclick="calculate()" style="background:#f0ad4e;">仅交换计算（不推进回合）</button>
   <button class="btn-del" data-lock="1" onclick="resetRound()" style="padding:6px 16px;">重置回合</button>
   <button class="btn-calc" onclick="toggleLog()" id="logToggleBtn" style="background:#6c757d; padding:6px 16px;">隐藏日志</button>
@@ -64,6 +66,21 @@
         </label>
         <button class="btn-del" onclick="clearHistory()" style="padding:4px 10px; font-size:12px;">清空历史</button>
       </div>
+    </div>
+    <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin:6px 0;">
+      <label class="small">窗口：
+        <select id="histWindow" onchange="onHistWindowChange()">
+          <option value="50">50</option>
+          <option value="100" selected>100</option>
+          <option value="500">500</option>
+          <option value="1000">1000</option>
+        </select> 回合
+      </label>
+      <label class="small"><input type="checkbox" id="histFollow" checked onchange="onHistFollowChange()"> 跟随最新</label>
+      <span class="small" id="histRangeLabel"></span>
+    </div>
+    <div style="margin-bottom:6px;">
+      <input type="range" id="histPos" min="0" max="100" value="100" style="width:100%;" oninput="onHistSlider()">
     </div>
     <div id="historyChart" style="margin-top:6px;"></div>
   </div>
