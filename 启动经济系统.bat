@@ -7,7 +7,7 @@ cd /d "d:\PythonProject\money_system"
 echo ========================================
 echo   Money System - One-click Start
 echo   Project: %cd%
-echo   Backend: python app.py (http.server)
+echo   Backend: app.py (http.server) - PyPy preferred
 echo   Frontend: economy.html (fetch API)
 echo ========================================
 echo.
@@ -21,6 +21,16 @@ if errorlevel 1 (
     exit /b 1
 )
 python --version
+
+REM ===== 1.5 Detect runtime: prefer PyPy for speed, fallback to CPython =====
+set "PYPY_PATH=d:\PythonProject\pypy3.11-v7.3.23-win64\pypy3.exe"
+set "RUN_CMD=python"
+if exist "%PYPY_PATH%" (
+    set "RUN_CMD=%PYPY_PATH%"
+    echo Using PyPy: %PYPY_PATH%
+) else (
+    echo PyPy not found, using CPython (python)
+)
 
 REM ===== 2. Check port 8000 =====
 echo.
@@ -41,8 +51,8 @@ if %PORT_IN_USE%==1 (
 
 REM ===== 3. Start backend API server in a new visible window =====
 echo.
-echo [3/4] Starting backend (python app.py) on port 8000...
-start "MoneySystem API" cmd /k "cd /d d:\PythonProject\money_system && python app.py"
+echo [3/4] Starting backend on port 8000...
+start "MoneySystem API" cmd /k "cd /d d:\PythonProject\money_system && %RUN_CMD% app.py"
 
 REM ===== 4. Wait and open browser =====
 echo.

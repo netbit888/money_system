@@ -38,7 +38,12 @@
 
 <div class="panel">
   <h2>回合</h2>
-  <div style="margin-bottom:8px;">当前回合：<b id="roundNum">0</b> &nbsp;|&nbsp; 每回合时序：清除易腐资源 → 收入 → 交换（含税收抽取）→ 代谢 → 死亡/繁殖/抚养</div>
+  <div style="margin-bottom:8px;">当前回合：<b id="roundNum">0</b> &nbsp;|&nbsp; 本回合耗时：<b id="roundMs">—</b> &nbsp;|&nbsp; 每回合时序：清除易腐资源 → 收入 → 交换（含税收抽取）→ 代谢 → 死亡/繁殖/抚养</div>
+  <div style="margin-bottom:8px;">个体总数：<b id="popCurrent">0</b> / <span id="popCapMax">—</span><span id="popCapHint" class="small" style="color:#e74c3c;"></span>
+    <div id="popCapBar" style="height:8px; background:#eee; border-radius:4px; overflow:hidden; margin-top:4px; max-width:480px;">
+      <div id="popCapFill" style="height:100%; width:0%; background:#3498db; border-radius:4px; transition:width .2s;"></div>
+    </div>
+  </div>
   <div class="btn-group">
     <button class="btn-calc" data-lock="1" onclick="nextRound()">下一回合（含交换）</button>
     <button id="autoBtn" class="btn-calc" onclick="toggleAuto()">▶ 自动运行</button>

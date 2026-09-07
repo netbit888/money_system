@@ -119,6 +119,14 @@
       <input id="dPeriKey" placeholder="资源名(如劳动力)">
       <button class="btn-add" onclick="addDefaultPerishable()">添加</button>
     </div>
+
+    <h3>个体总数上限（防止人口膨胀 / 内存失控）</h3>
+    <div class="row" style="margin:6px 0; align-items:center;">
+      <label style="font-size:13px; white-space:nowrap;">上限
+        <input id="dMaxPop" type="number" step="1" min="0" placeholder="300000" style="width:100px;" onchange="updateMaxPop()">
+        个 <span class="small">（0 = 不限制，达到上限即停止繁殖与手动新增）</span>
+      </label>
+    </div>
   </div>
 </div>
 
@@ -216,6 +224,7 @@ function renderDefaults() {
   renderDefaultPerishable();
   document.getElementById("dAdaptive").checked = !!defaultSettings.adaptive_pricing;
   document.getElementById("dAlpha").value = defaultSettings.price_adjust_alpha ?? 0.1;
+  document.getElementById("dMaxPop").value = defaultSettings.max_population ?? 300000;
 }
 
 function renderDefaultAttrs() {
@@ -426,6 +435,13 @@ function updatePriceAlpha() {
   const v = parseFloat(document.getElementById("dAlpha").value);
   if (isNaN(v) || v < 0 || v > 1) { alert("α 必须在 0~1 之间"); renderDefaults(); return; }
   defaultSettings.price_adjust_alpha = v;
+  putDefaults();
+}
+
+function updateMaxPop() {
+  const v = parseInt(document.getElementById("dMaxPop").value);
+  if (isNaN(v) || v < 0) { alert("上限必须是 ≥0 的整数（0 = 不限制）"); renderDefaults(); return; }
+  defaultSettings.max_population = v;
   putDefaults();
 }
 
@@ -934,7 +950,8 @@ async function importConfig(event) {
     const r = await api("POST", "/import-persons", data);
     // 拉取最新状态
     await loadState();
-    alert("个体配置导入成功（个体数：" + r.count + "），基础设置未受影响");
+    alert("个体配置导入成功（个体数：" + r.count + "），基础设置未受影响"
+      + (r.warning ? "\n⚠️ " + r.warning : ""));
   } catch (err) {
     alert("导入失败：" + err.message);
   }

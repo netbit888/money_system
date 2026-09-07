@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -75,6 +76,7 @@ class DefaultSettings:
     adaptive_pricing: bool = False        # 轻量价格发现：按成交率反馈调整每个挂牌 rate
     price_adjust_alpha: float = 0.1       # 调价强度 α：0~1，越大价格波动越剧烈
     price_index_numeraire: str = "钱"     # 价格指数记账单位（单一计价货币，默认 钱）
+    max_population: int = 300000          # 个体总数上限：0 = 不限制（防止人口膨胀/内存失控）
 
 
 @dataclass
@@ -253,6 +255,7 @@ class Simulation:
         self._last_res_delta: dict[str, float] = {}  # 本回合资源总量变化（delta 账本）
         self._last_n_dead: int = 0
         self._last_n_born: int = 0
+        self.last_elapsed_ms: float = 0.0   # 最近一回合/一次交换的耗时（ms），供前端展示
         # 持久化：分层历史。history_dir 可注入 —— 测试/基准必须传临时目录，
         # 否则会写进真实的 snapshots/（曾发生过基准脚本覆盖真实历史的事故）
         self._history_dir = history_dir
@@ -395,13 +398,14 @@ class Simulation:
             groups[base] = groups.get(base, 0) + 1
             w = 0.0
             for k, v in p.attrs.items():
-                fv = float(v)
-                resource_totals[k] = resource_totals.get(k, 0.0) + fv
-                w += fv
+                resource_totals[k] = resource_totals.get(k, 0.0) + v
+                w += v
             group_wealth[base] = group_wealth.get(base, 0.0) + w
             wealth_list.append(w)
-            if any(r.sell == "劳动力" for r in p.rules):
-                labor_posted.append(p)
+            for r in p.rules:
+                if r.sell == "劳动力":
+                    labor_posted.append(p)
+                    break
         metrics = self._compute_metrics(groups, group_wealth, wealth_list, labor_posted)
         self._levels[0].append({
             "round": self.round,
@@ -553,6 +557,7 @@ class Simulation:
         verbose=False（默认）：输出汇总日志，适合大 N。
         verbose=True：输出每个体每步详细日志，调试用。
         """
+        t0 = time.perf_counter()
         if not self.persons:
             raise ValueError("无个体")
 
@@ -668,8 +673,15 @@ class Simulation:
         #    守恒规则：母体付出 cost，子代最多获得 cost（差额为生育损耗）；
         #    非代谢资源按 reproInheritRatio 从母体【转移】而非复制。
         born = []
-        reproducers = [p for p in self.persons if p.canReproduce]
-        for p in reproducers:
+        max_pop = self.defaults.max_population
+        for p in self.persons:
+            # 人口上限：达到上限即停止本回合繁殖（逐个体判断，防止单回合超生；
+            # 死亡名额已在第 4 步清算，当回合即可被占用）。直接遍历 persons，
+            # 稳态（已达上限）首个个体即 break，省去 reproducers 列表的 O(N) 构建。
+            if max_pop > 0 and len(self.persons) >= max_pop:
+                break
+            if not p.canReproduce:
+                continue
             m = p.metabolism
             amount = m.amount
             if amount <= 0:
@@ -851,6 +863,7 @@ class Simulation:
         self._record_history()
         self._maybe_persist()
 
+        self.last_elapsed_ms = (time.perf_counter() - t0) * 1000.0
         return "\n".join(out)
 
     # ===================== 交换计算 =====================
@@ -862,6 +875,7 @@ class Simulation:
         verbose=False（默认）：输出汇总日志（按资源统计 + 整体 + 总量变化），适合大 N。
         verbose=True：输出每笔匹配/成交详细日志，调试用，N 大时慎用（O(N²) 字符串）。
         """
+        t0 = time.perf_counter()
         if not self.persons:
             raise ValueError("无个体")
 
@@ -872,7 +886,7 @@ class Simulation:
         n_entities = len(self.persons)
         ids = [p.id for p in self.persons]
         names = [p.name for p in self.persons]
-        attrs = [dict(p.attrs) for p in self.persons]
+        attrs = [p.attrs.copy() for p in self.persons]
         needs_list = [p.needs for p in self.persons]
         rules_list = [p.rules for p in self.persons]
         before_attrs = [dict(a) for a in attrs] if verbose else None
@@ -898,14 +912,14 @@ class Simulation:
         # 卖家索引：资源 → [(卖方索引, 规则), ...]，按 rate 升序预排序
         # 同一卖家的多 ask 通过 attrs[i][res] 实时维护库存，自然同步
         sellers_by_res: dict[str, list[tuple[int, Rule, int]]] = {}
-        rule_listed: dict[tuple[int, int], float] = {}   # (person_id, rule_idx) -> 挂牌时库存
-        rule_sold: dict[tuple[int, int], float] = {}     # (person_id, rule_idx) -> 本回合成交量
+        rule_listed: dict[tuple[int, int], float] = {}   # (person_idx, rule_idx) -> 挂牌时库存
+        rule_sold: dict[tuple[int, int], float] = {}     # (person_idx, rule_idx) -> 本回合成交量
         for i in range(n_entities):
             for idx, rule in enumerate(rules_list[i]):
                 if rule.rate <= 0:
                     continue
                 sellers_by_res.setdefault(rule.sell, []).append((i, rule, idx))
-                rule_listed[(ids[i], idx)] = float(attrs[i].get(rule.sell, 0))
+                rule_listed[(i, idx)] = float(attrs[i].get(rule.sell, 0))
         for lst in sellers_by_res.values():
             lst.sort(key=lambda x: x[1].rate)
 
@@ -991,7 +1005,7 @@ class Simulation:
                         attrs[a_idx][res] = float(attrs[a_idx].get(res, 0)) + q
                         attrs[b_idx][res] = inv - q
                         attrs[b_idx][pay_res] = float(attrs[b_idx].get(pay_res, 0)) + seller_gets
-                        rule_sold[(ids[b_idx], idx)] = rule_sold.get((ids[b_idx], idx), 0.0) + q
+                        rule_sold[(b_idx, idx)] = rule_sold.get((b_idx, idx), 0.0) + q
                         self._last_tax[pay_res] = self._last_tax.get(pay_res, 0.0) + tax
                         remaining -= q
 
@@ -1082,16 +1096,15 @@ class Simulation:
         if self.defaults.adaptive_pricing and self.defaults.price_adjust_alpha > 0:
             alpha = float(self.defaults.price_adjust_alpha)
             adjusted = 0
-            # id → 个体索引：一次 O(N) 建表，替代循环内 self.find(pid) 的 O(N) 线性查找
-            # （否则整段退化为 O(挂牌数 × 个体数) 的平方复杂度，N=3万 时单回合 >40s）
-            by_id = {p.id: p for p in self.persons}
-            for (pid, idx), listed in rule_listed.items():
+            # rule_listed/rule_sold 的 key 直接用个体索引 i（而非 id），
+            # 调价时 self.persons[i] 直接取个体，省去 by_id 建表的 O(N) 字典开销
+            for (i, idx), listed in rule_listed.items():
                 if listed <= 0:
                     continue
-                sold = rule_sold.get((pid, idx), 0.0)
+                sold = rule_sold.get((i, idx), 0.0)
                 fill = sold / listed
-                p = by_id.get(pid)
-                if p is None or idx >= len(p.rules):
+                p = self.persons[i]
+                if idx >= len(p.rules):
                     continue
                 new_rate = p.rules[idx].rate * (1.0 + alpha * (2.0 * fill - 1.0))
                 if new_rate < 1e-6:
@@ -1106,6 +1119,7 @@ class Simulation:
         _tot_met = sum(s["met"] for s in resource_stats.values())
         self._last_met_rate = (_tot_met / _tot_demand) if _tot_demand > 0 else None
 
+        self.last_elapsed_ms = (time.perf_counter() - t0) * 1000.0
         return "\n".join(out)
 
     # ===================== 合并操作 =====================
@@ -1184,6 +1198,8 @@ class Simulation:
     # ===================== 个体管理 =====================
     def add_person(self, name: str | None = None) -> Person:
         """按 defaultSettings 模板创建个体。"""
+        if self.defaults.max_population > 0 and len(self.persons) >= self.defaults.max_population:
+            raise ValueError(f"已达个体上限 {self.defaults.max_population}，无法新增")
         if not name:
             name = f"个体{self.next_id}"
         p = Person(
@@ -1330,6 +1346,7 @@ def export_defaults(path: str, defaults: DefaultSettings, government: Government
             "adaptive_pricing": defaults.adaptive_pricing,
             "price_adjust_alpha": defaults.price_adjust_alpha,
             "price_index_numeraire": defaults.price_index_numeraire,
+            "max_population": defaults.max_population,
         },
         "government": {
             "tax_rate": government.tax_rate if government is not None else 0.1,
@@ -1368,6 +1385,7 @@ def import_defaults(path: str) -> DefaultSettings:
         adaptive_pricing=bool(src.get("adaptive_pricing", False)),
         price_adjust_alpha=float(src.get("price_adjust_alpha", 0.1)),
         price_index_numeraire=str(src.get("price_index_numeraire", "钱")),
+        max_population=int(src.get("max_population", 300000)),
     )
 
 

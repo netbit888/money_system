@@ -61,6 +61,7 @@ def defaults_to_dict(d: DefaultSettings) -> dict:
         "adaptive_pricing": d.adaptive_pricing,
         "price_adjust_alpha": d.price_adjust_alpha,
         "price_index_numeraire": d.price_index_numeraire,
+        "max_population": d.max_population,
     }
 
 
@@ -114,6 +115,7 @@ def defaults_from_dict(d: dict) -> DefaultSettings:
         adaptive_pricing=bool(d.get("adaptive_pricing", False)),
         price_adjust_alpha=float(d.get("price_adjust_alpha", 0.1)),
         price_index_numeraire=str(d.get("price_index_numeraire", "钱")),
+        max_population=int(d.get("max_population", 300000)),
     )
 
 
@@ -319,17 +321,17 @@ class Handler(BaseHTTPRequestHandler):
 
             if method == "POST" and path == "/next-round":
                 log = sim.next_round()
-                self._json({"log": log, "summary": sim.summary(), "government": government_to_dict(sim.government)})
+                self._json({"log": log, "summary": sim.summary(), "government": government_to_dict(sim.government), "duration_ms": sim.last_elapsed_ms})
                 return
 
             if method == "POST" and path == "/calculate":
                 log = sim.calculate()
-                self._json({"log": log, "summary": sim.summary(), "government": government_to_dict(sim.government)})
+                self._json({"log": log, "summary": sim.summary(), "government": government_to_dict(sim.government), "duration_ms": sim.last_elapsed_ms})
                 return
 
             if method == "POST" and path == "/next-and-calc":
                 log = sim.next_round_and_calculate()
-                self._json({"log": log, "summary": sim.summary(), "government": government_to_dict(sim.government)})
+                self._json({"log": log, "summary": sim.summary(), "government": government_to_dict(sim.government), "duration_ms": sim.last_elapsed_ms})
                 return
 
             if method == "POST" and path in ("/reset", "/load-config-folder"):
@@ -359,7 +361,11 @@ class Handler(BaseHTTPRequestHandler):
                 sim.persons = [person_from_dict(p) for p in src.get("persons", [])]
                 sim.next_id = max((p.id for p in sim.persons), default=0) + 1
                 sim._fill_missing_birth_round()
-                self._json({"ok": True, "count": len(sim.persons)})
+                warning = None
+                cap = sim.defaults.max_population
+                if cap > 0 and len(sim.persons) > cap:
+                    warning = f"导入后个体数 {len(sim.persons)} 已超上限 {cap}，将阻止后续繁殖与新增"
+                self._json({"ok": True, "count": len(sim.persons), "warning": warning})
                 return
 
             if method == "GET" and path == "/export-defaults":

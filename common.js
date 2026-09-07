@@ -111,7 +111,8 @@ function normalizeDefaults(d) {
     rules: (d.rules || []).map(r => normAsk(r)),
     perishable_resources: (d.perishable_resources || []).map(r => String(r)),
     adaptive_pricing: d.adaptive_pricing === true,
-    price_adjust_alpha: Number(d.price_adjust_alpha) || 0.1
+    price_adjust_alpha: Number(d.price_adjust_alpha) || 0.1,
+    max_population: d.max_population ?? 300000
   };
 }
 
@@ -501,8 +502,48 @@ function _refreshHistoryIfVisible() {
   }
 }
 
+// ===================== 人口上限进度 =====================
+function renderPopCap() {
+  const curEl = document.getElementById("popCurrent");
+  if (!curEl) return;
+  const cur = lastSummary.total || 0;
+  const cap = defaultSettings.max_population;
+  curEl.textContent = cur;
+  const maxEl = document.getElementById("popCapMax");
+  const fill = document.getElementById("popCapFill");
+  const hint = document.getElementById("popCapHint");
+  if (cap > 0) {
+    if (maxEl) maxEl.textContent = cap;
+    const pct = Math.min(100, cur / cap * 100);
+    if (fill) {
+      fill.style.width = pct + "%";
+      fill.style.background = pct >= 100 ? "#e74c3c" : (pct >= 90 ? "#f39c12" : "#3498db");
+    }
+    if (hint) hint.textContent = pct >= 100 ? "　已达上限，繁殖与新增已停止" : "";
+  } else {
+    if (maxEl) maxEl.textContent = "不限";
+    if (fill) fill.style.width = "0%";
+    if (hint) hint.textContent = "";
+  }
+}
+
+// ===================== 回合耗时 =====================
+function renderRoundMs(ms) {
+  const el = document.getElementById("roundMs");
+  if (!el) return;
+  if (ms === undefined || ms === null) {
+    el.textContent = "—";
+    el.style.color = "";
+    return;
+  }
+  const v = Number(ms);
+  el.textContent = v.toFixed(1) + " ms";
+  el.style.color = v > 2000 ? "#e74c3c" : "";
+}
+
 // ===================== 扇形图（用后端 summary.groups）=====================
 function renderPieChart() {
+  renderPopCap();
   const box = document.getElementById("pieChart");
   if (!box) return;
   const groups = lastSummary.groups || {};
@@ -608,6 +649,7 @@ async function nextRound() {
     lastSummary = r.summary;
     const rn = document.getElementById("roundNum");
     if (rn) rn.textContent = round;
+    renderRoundMs(r.duration_ms);
     const log = document.getElementById("log");
     if (log) log.textContent = r.log;
     renderGovernment(r.government);
@@ -672,6 +714,7 @@ async function calculate() {
     const r = await api("POST", "/calculate");
     personsTotal = (r.summary && r.summary.total) || 0;
     lastSummary = r.summary;
+    renderRoundMs(r.duration_ms);
     const log = document.getElementById("log");
     if (log) log.textContent = r.log;
     renderGovernment(r.government);
@@ -691,6 +734,7 @@ async function nextRoundAndCalculate() {
     lastSummary = r.summary;
     const rn = document.getElementById("roundNum");
     if (rn) rn.textContent = round;
+    renderRoundMs(r.duration_ms);
     const log = document.getElementById("log");
     if (log) log.textContent = r.log;
     renderGovernment(r.government);
