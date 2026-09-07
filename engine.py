@@ -308,15 +308,29 @@ class Simulation:
             for p, res, amt, b, a in consumed:
                 out.append(f"  {p.name}：{res} {fmt_num(b)} → {fmt_num(a)}（-{fmt_num(amt)}）")
 
-        # 4. 死亡检查：代谢资源 < 0 立即消灭（资源消失，无遗产）
+        # 4. 死亡检查：代谢资源 < 0 立即消灭（破产）
+        #    死亡清算：剩余资产（正值）全部转入政府国库，不再凭空消失
         dead = [(p, res, a) for p, res, _amt, _b, a in consumed if float(a) < 0]
         n_dead = len(dead)
+        seized_total: dict[str, float] = {}
         if dead:
             if verbose:
                 out.append("")
                 out.append("── 死亡 ──")
-                for p, res, a in dead:
+            for p, res, a in dead:
+                seized: dict[str, float] = {}
+                for k, v in list(p.attrs.items()):
+                    v = float(v)
+                    if v > 0:
+                        self.government.collect(k, v)          # 资产归政府国库
+                        seized[k] = v
+                        seized_total[k] = seized_total.get(k, 0.0) + v
+                if verbose:
                     out.append(f"  ✗ {p.name} 死亡（{res}={fmt_num(a)}）")
+                    if seized:
+                        out.append(f"    清算资产归政府：{self._fmt_attrs(seized)}")
+                    else:
+                        out.append("    资产已空，无清算")
             dead_ids = {p.id for p, _r, _a in dead}
             self.persons = [p for p in self.persons if p.id not in dead_ids]
 
@@ -479,6 +493,11 @@ class Simulation:
                 f"死亡：{n_dead} / 繁殖：{n_born} / 断乳：{len(weaned)} / "
                 f"抚养：{n_transfers + n_failures} 笔（成功 {n_transfers} / 失败 {n_failures}）"
             )
+            if n_dead > 0 and seized_total:
+                out.append(
+                    "死亡清算（归政府）："
+                    + "，".join(f"{k} {fmt_num(v)}" for k, v in sorted(seized_total.items()))
+                )
 
             # 资源总量变化（包括死亡消失的资源、新生增加的资源）
             before_total: dict[str, float] = {}
