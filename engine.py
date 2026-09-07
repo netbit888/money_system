@@ -74,6 +74,7 @@ class DefaultSettings:
     perishable_resources: list[str] = field(default_factory=list)  # 易腐资源：每回合开始清零，仅当期有效
     adaptive_pricing: bool = False        # 轻量价格发现：按成交率反馈调整每个挂牌 rate
     price_adjust_alpha: float = 0.1       # 调价强度 α：0~1，越大价格波动越剧烈
+    price_index_numeraire: str = "钱"     # 价格指数记账单位（单一计价货币，默认 钱）
 
 
 @dataclass
@@ -151,6 +152,25 @@ def get_base_name(name: str) -> str:
     return name[:idx] if idx > 0 else name
 
 
+def gini(values: list[float]) -> float:
+    """基尼系数：财富（或任意非负量）分布的集中度，0=完全平等，1=完全集中。
+
+    采用升序公式 G = (2·Σ i·xᵢ)/(n·Σx) − (n+1)/n（i 从 1 起）。
+    空列表或总和为 0 时返回 0.0 以避免除零。
+    """
+    n = len(values)
+    if n == 0:
+        return 0.0
+    s = sorted(values)
+    total = sum(s)
+    if total <= 0:
+        return 0.0
+    cum = 0.0
+    for i, x in enumerate(s, start=1):
+        cum += i * x
+    return (2.0 * cum) / (n * total) - (n + 1.0) / n
+
+
 # ===================== 引擎 =====================
 class Simulation:
     def __init__(self, defaults: DefaultSettings | None = None):
@@ -162,6 +182,11 @@ class Simulation:
             income=Metabolism("钱", 1),
         )
         self.government: Government = Government()
+        # 经济指标暂存（每回合 calculate/next_round 后刷新，供 _record_history 使用）
+        self._last_trade_agg: dict = {}    # 本回合成交聚合：{res: {qty, pay:{pay_res:sum}, sellers:set}}
+        self._last_met_rate: float | None = None   # 整体需求满足率（met/demand）
+        self._last_n_dead: int = 0
+        self._last_n_born: int = 0
         # 持久化：历史曲线 + 快照存盘
         self.history: list[dict] = []                    # 每回合一行 {round, total, groups, resource_totals}
         self._history_dir = "snapshots"
@@ -183,17 +208,84 @@ class Simulation:
         """记录当前回合到历史曲线。每回合调用一次。"""
         groups: dict[str, int] = {}
         resource_totals: dict[str, float] = {}
+        group_wealth: dict[str, float] = {}
+        wealth_list: list[float] = []
         for p in self.persons:
             base = get_base_name(p.name)
             groups[base] = groups.get(base, 0) + 1
+            w = 0.0
             for k, v in p.attrs.items():
-                resource_totals[k] = resource_totals.get(k, 0.0) + float(v)
+                fv = float(v)
+                resource_totals[k] = resource_totals.get(k, 0.0) + fv
+                w += fv
+            group_wealth[base] = group_wealth.get(base, 0.0) + w
+            wealth_list.append(w)
+        metrics = self._compute_metrics(groups, group_wealth, wealth_list)
         self.history.append({
             "round": self.round,
             "total": len(self.persons),
             "groups": groups,
             "resource_totals": resource_totals,
+            "metrics": metrics,
         })
+
+    def _compute_metrics(
+        self,
+        groups: dict[str, int],
+        group_wealth: dict[str, float],
+        wealth_list: list[float],
+    ) -> dict:
+        """根据本回合末状态 + 暂存的成交聚合，计算经济指标。
+
+        所有指标均可为空（None）：无成交/无人挂劳动力时对应指标置 None，
+        前端用 (h.metrics || {}) 兜底，老历史数据缺字段也不崩。
+        """
+        m: dict = {}
+
+        # 1. 价格指数（成交加权，单一记账单位）：平均"每单位商品值多少 钱"
+        num = self.defaults.price_index_numeraire
+        num_pay = 0.0
+        num_qty = 0.0
+        for res, ta in self._last_trade_agg.items():
+            p = ta["pay"].get(num, 0.0)
+            if ta["qty"] > 0 and p > 0:
+                num_pay += p
+                num_qty += ta["qty"]
+        m["price_index"] = (num_pay / num_qty) if num_qty > 0 else None
+
+        # 2. 成交总量（所有资源成交量之和）
+        m["volume"] = sum(ta["qty"] for ta in self._last_trade_agg.values())
+
+        # 3. 需求满足率（生态健康信号）
+        m["met_rate"] = self._last_met_rate
+
+        # 4. 基尼系数（财富净值分布）
+        m["gini"] = gini(wealth_list)
+
+        # 5. 产业集中度 HHI（财富口径 + 人口口径）：Σ share²，1/n ~ 1
+        total_w = sum(group_wealth.values())
+        m["hhi_wealth"] = (
+            sum((w / total_w) ** 2 for w in group_wealth.values()) if total_w > 0 else 0.0
+        )
+        total_p = sum(groups.values())
+        m["hhi_pop"] = (
+            sum((c / total_p) ** 2 for c in groups.values()) if total_p > 0 else 0.0
+        )
+
+        # 6. 失业率（劳动力口径）：挂出劳动力却 0 成交者占比
+        labor_posted = [p for p in self.persons if any(r.sell == "劳动力" for r in p.rules)]
+        n_posted = len(labor_posted)
+        if n_posted > 0:
+            sold_ids = self._last_trade_agg.get("劳动力", {}).get("sellers", set())
+            employed = sum(1 for p in labor_posted if p.id in sold_ids)
+            m["unemployment"] = (n_posted - employed) / n_posted
+        else:
+            m["unemployment"] = None
+
+        # 7. 出生 / 死亡（回合事件计数）
+        m["born"] = self._last_n_born
+        m["dead"] = self._last_n_dead
+        return m
 
     def _maybe_persist(self) -> None:
         """每 N 回合存盘一次。"""
@@ -525,6 +617,8 @@ class Simulation:
                     out.append(f"  {k}：{fmt_num(before_v)} → {fmt_num(after_v)}{delta_str}")
 
         # 持久化：记录历史曲线 + 每 N 回合存盘
+        self._last_n_dead = n_dead
+        self._last_n_born = n_born
         self._record_history()
         self._maybe_persist()
 
@@ -591,6 +685,8 @@ class Simulation:
             lst.sort(key=lambda x: x[1].rate)
 
         trades = []
+        # 经济指标：本回合成交聚合（资源 → 成交量/支付/卖家集合），供历史曲线使用
+        trade_agg: dict[str, dict] = {}
         # 按资源累计统计：买方数/卖方数/成交笔数/流转量/总需求/已满足
         resource_stats: dict[str, dict] = {}
 
@@ -661,6 +757,11 @@ class Simulation:
                         # 政府抽税：从支付额中按税率抽取，卖家实收 = pay - tax
                         tax = pay * self.government.tax_rate
                         seller_gets = pay - tax
+                        # 经济指标：累积本回合成交（资源/支付额/卖家），供历史曲线使用
+                        _ta = trade_agg.setdefault(res, {"qty": 0.0, "pay": {}, "sellers": set()})
+                        _ta["qty"] += q
+                        _ta["pay"][pay_res] = _ta["pay"].get(pay_res, 0.0) + pay
+                        _ta["sellers"].add(B.id)
                         A.attrs[pay_res] = a_pay - pay
                         A.attrs[res] = float(A.attrs.get(res, 0)) + q
                         B.attrs[res] = inv - q
@@ -766,6 +867,12 @@ class Simulation:
                 p.rules[idx].rate = new_rate
                 adjusted += 1
             out.append(f"价格自适应：调整 {adjusted} 条挂牌（α={alpha}）")
+
+        # 经济指标：暂存本回合成交聚合与整体满足率，供 _record_history 使用
+        self._last_trade_agg = trade_agg
+        _tot_demand = sum(s["demand"] for s in resource_stats.values())
+        _tot_met = sum(s["met"] for s in resource_stats.values())
+        self._last_met_rate = (_tot_met / _tot_demand) if _tot_demand > 0 else None
 
         return "\n".join(out)
 
@@ -986,6 +1093,7 @@ def export_defaults(path: str, defaults: DefaultSettings, government: Government
             "needs": [{"key": n.key, "amount": n.amount} for n in defaults.needs],
             "rules": [{"sell": r.sell, "buy": r.buy, "rate": r.rate} for r in defaults.rules],
             "perishable_resources": list(defaults.perishable_resources),
+            "price_index_numeraire": defaults.price_index_numeraire,
         },
         "government": {
             "tax_rate": government.tax_rate if government is not None else 0.1,
@@ -1019,6 +1127,7 @@ def import_defaults(path: str) -> DefaultSettings:
         needs=[Need(n["key"], float(n["amount"])) for n in (src.get("needs") or [])],
         rules=[norm_ask(r) for r in (src.get("rules") or [])],
         perishable_resources=[str(r) for r in (src.get("perishable_resources") or [])],
+        price_index_numeraire=str(src.get("price_index_numeraire", "钱")),
     )
 
 

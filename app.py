@@ -60,6 +60,7 @@ def defaults_to_dict(d: DefaultSettings) -> dict:
         "perishable_resources": list(d.perishable_resources),
         "adaptive_pricing": d.adaptive_pricing,
         "price_adjust_alpha": d.price_adjust_alpha,
+        "price_index_numeraire": d.price_index_numeraire,
     }
 
 
@@ -116,6 +117,7 @@ def defaults_from_dict(d: dict) -> DefaultSettings:
         perishable_resources=[str(r) for r in (d.get("perishable_resources") or [])],
         adaptive_pricing=bool(d.get("adaptive_pricing", False)),
         price_adjust_alpha=float(d.get("price_adjust_alpha", 0.1)),
+        price_index_numeraire=str(d.get("price_index_numeraire", "钱")),
     )
 
 

@@ -339,6 +339,125 @@ function renderHistoryChart() {
 
   svg += "</svg>";
   box.innerHTML = svg;
+  renderEconChart();
+}
+
+// ===================== 经济指标图（双 Y 轴）=====================
+// 左轴：0~1 指标（基尼/HHI/失业率/满足率）；右轴：价格指数（首非空点=100 归一）。
+function renderEconChart() {
+  const box = document.getElementById("econChart");
+  if (!box) return;
+  if (!historyData.length) { box.innerHTML = ""; return; }
+
+  const opt = {
+    price_index: document.getElementById("ecPriceIndex")?.checked,
+    gini: document.getElementById("ecGini")?.checked,
+    hhi_wealth: document.getElementById("ecHhiWealth")?.checked,
+    hhi_pop: document.getElementById("ecHhiPop")?.checked,
+    unemployment: document.getElementById("ecUnemployment")?.checked,
+    met_rate: document.getElementById("ecMetRate")?.checked,
+  };
+
+  const n = historyData.length;
+
+  // 价格指数归一：首个非空点 = 100
+  let base = null;
+  for (const h of historyData) {
+    const v = h.metrics ? h.metrics.price_index : null;
+    if (base === null && v != null && v > 0) { base = v; break; }
+  }
+  const series = [];
+  if (opt.price_index) {
+    const data = historyData.map(h => {
+      const v = h.metrics ? h.metrics.price_index : null;
+      return (v == null || base == null) ? null : v / base * 100;
+    });
+    series.push({ name: "价格指数", data, color: "#c0392b", axis: "right" });
+  }
+  function addRatio(key, name, color) {
+    if (!opt[key]) return;
+    series.push({
+      name, color, axis: "left",
+      data: historyData.map(h => (h.metrics ? h.metrics[key] : null)),
+    });
+  }
+  addRatio("gini", "基尼系数", "#2980b9");
+  addRatio("hhi_wealth", "财富HHI", "#8e44ad");
+  addRatio("hhi_pop", "人口HHI", "#16a085");
+  addRatio("unemployment", "失业率", "#d35400");
+  addRatio("met_rate", "满足率", "#27ae60");
+
+  if (!series.length) { box.innerHTML = "<i>勾选上方指标以查看</i>"; return; }
+
+  // 取值范围
+  const leftVals = [], rightVals = [];
+  series.forEach(s => s.data.forEach(v => { if (v != null) (s.axis === "right" ? rightVals : leftVals).push(v); }));
+  const lMin = Math.min(0, ...(leftVals.length ? leftVals : [0]));
+  const lMaxRaw = leftVals.length ? Math.max(...leftVals) : 1;
+  const lMax = lMaxRaw <= lMin ? lMin + 1 : lMaxRaw;
+  const rMin = rightVals.length ? Math.min(...rightVals) : 0;
+  const rMaxRaw = rightVals.length ? Math.max(...rightVals) : 1;
+  const rMax = rMaxRaw <= rMin ? rMin + 1 : rMaxRaw;
+
+  const W = 700, H = 280, padL = 50, padR = 50, padT = 10, padB = 30;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const xScale = (i) => padL + (n <= 1 ? plotW / 2 : (i / (n - 1)) * plotW);
+  const yLeft = (v) => padT + plotH - ((v - lMin) / (lMax - lMin)) * plotH;
+  const yRight = (v) => padT + plotH - ((v - rMin) / (rMax - rMin)) * plotH;
+
+  let svg = `<svg width="${W}" height="${H}" style="background:#fafafa; font-family:monospace; font-size:10px;">`;
+
+  // 左轴刻度（4 格）
+  for (let k = 0; k <= 4; k++) {
+    const v = lMin + (lMax - lMin) * k / 4;
+    const y = yLeft(v);
+    svg += `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="#eee"/>`;
+    svg += `<text x="${padL - 4}" y="${y + 3}" text-anchor="end" fill="#3498db">${fmtNum(v)}</text>`;
+  }
+  // 右轴刻度（价格指数）
+  for (let k = 0; k <= 4; k++) {
+    const v = rMin + (rMax - rMin) * k / 4;
+    const y = yRight(v);
+    svg += `<text x="${W - padR + 4}" y="${y + 3}" text-anchor="start" fill="#c0392b">${fmtNum(v)}</text>`;
+  }
+
+  // X 刻度
+  const xStep = Math.max(1, Math.floor(n / 8));
+  for (let i = 0; i < n; i += xStep) {
+    svg += `<line x1="${xScale(i)}" y1="${padT + plotH}" x2="${xScale(i)}" y2="${padT + plotH + 4}" stroke="#999"/>`;
+    svg += `<text x="${xScale(i)}" y="${padT + plotH + 16}" text-anchor="middle" fill="#666">${historyData[i].round}</text>`;
+  }
+  svg += `<text x="${W / 2}" y="${H - 2}" text-anchor="middle" fill="#666">回合</text>`;
+  svg += `<text x="${padL - 4}" y="${padT - 1}" text-anchor="end" fill="#3498db">0~1</text>`;
+  svg += `<text x="${W - padR + 4}" y="${padT - 1}" text-anchor="start" fill="#c0392b">指数</text>`;
+
+  // 曲线
+  for (const s of series) {
+    let path = "";
+    let started = false;
+    s.data.forEach((v, i) => {
+      if (v == null) { started = false; return; }
+      const x = xScale(i), y = (s.axis === "right" ? yRight(v) : yLeft(v));
+      path += (started ? " L" : "M") + x + "," + y;
+      started = true;
+    });
+    svg += `<path d="${path}" fill="none" stroke="${s.color}" stroke-width="1.8"/>`;
+  }
+
+  // 图例（含最新实际值）
+  let lx = padL, ly = padT + 2;
+  for (const s of series) {
+    let last = null;
+    for (let i = n - 1; i >= 0; i--) { if (s.data[i] != null) { last = s.data[i]; break; } }
+    const label = s.name + (last != null ? ` ${fmtNum(last)}` : "");
+    svg += `<line x1="${lx}" y1="${ly + 4}" x2="${lx + 16}" y2="${ly + 4}" stroke="${s.color}" stroke-width="2"/>`;
+    svg += `<text x="${lx + 20}" y="${ly + 8}" fill="${s.color}">${label}</text>`;
+    lx += label.length * 8 + 24;
+    if (lx > W - 60) { lx = padL; ly += 14; }
+  }
+
+  svg += "</svg>";
+  box.innerHTML = svg;
 }
 
 async function clearHistory() {

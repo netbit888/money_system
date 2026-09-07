@@ -30,7 +30,8 @@
     "rules": [],
     "perishable_resources": [
       "劳动力"
-    ]
+    ],
+    "price_index_numeraire": "钱"
   },
   "government": {
     "tax_rate": 0.1

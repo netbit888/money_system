@@ -83,7 +83,20 @@
       <input type="range" id="histPos" min="0" max="100" value="100" style="width:100%;" oninput="onHistSlider()">
     </div>
     <div id="historyChart" style="margin-top:6px;"></div>
-  </div>
+    </div>
+    <div style="margin-top:12px; padding-top:8px; border-top:1px dashed #ccc;">
+    <b style="font-size:14px;">经济指标</b><span style="font-size:12px; color:#888;">（看不到生态？这里看价格/贫富/集中度/就业）</span>
+    <div style="margin:6px 0;">
+      <label style="font-size:12px; margin-right:8px;"><input type="checkbox" id="ecPriceIndex" checked onchange="renderHistoryChart()"> 价格指数</label>
+      <label style="font-size:12px; margin-right:8px;"><input type="checkbox" id="ecGini" checked onchange="renderHistoryChart()"> 基尼系数</label>
+      <label style="font-size:12px; margin-right:8px;"><input type="checkbox" id="ecHhiWealth" onchange="renderHistoryChart()"> 财富HHI</label>
+      <label style="font-size:12px; margin-right:8px;"><input type="checkbox" id="ecHhiPop" onchange="renderHistoryChart()"> 人口HHI</label>
+      <label style="font-size:12px; margin-right:8px;"><input type="checkbox" id="ecUnemployment" checked onchange="renderHistoryChart()"> 失业率</label>
+      <label style="font-size:12px; margin-right:8px;"><input type="checkbox" id="ecMetRate" checked onchange="renderHistoryChart()"> 满足率</label>
+    </div>
+    <div id="econChart" style="margin-top:6px;"></div>
+    </div>
+    </div>
 </div>
 
 <script src="/common.js"></script>
