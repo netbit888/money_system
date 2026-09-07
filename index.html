@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>经济系统 · 回合</title>
+<link rel="stylesheet" href="/common.css">
+</head>
+<body>
+
+<div class="nav-bar">
+  <a class="nav-link" href="/economy">配置管理 →</a>
+</div>
+
+<h1>回合（首页）</h1>
+<div class="small">后端 Python 引擎 + 前端 fetch 调用。服务地址：<code id="apiBase">http://127.0.0.1:8000</code></div>
+
+<div class="panel" id="govPanel">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="margin:0;">政府（税收抽取）</h2>
+  </div>
+  <div class="row" style="margin:8px 0; align-items:center;">
+    <label>税率：<input id="govTaxRate" type="number" step="0.01" min="0" max="1" style="width:70px;"></label>
+    <button class="btn-add" data-lock="1" onclick="applyTaxRate()">应用税率</button>
+    <span class="small" id="govTaxRateHint">从每笔成交的支付额中抽取，卖家实收 = 支付 × (1 − 税率)</span>
+  </div>
+  <div class="row" style="align-items:flex-start;">
+    <div style="flex:1; min-width:160px;">
+      <h3>国库（当前持有）</h3>
+      <div id="govTreasury" class="small">—</div>
+    </div>
+    <div style="flex:1; min-width:160px;">
+      <h3>累计征收</h3>
+      <div id="govCollected" class="small">—</div>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>回合</h2>
+  <div style="margin-bottom:8px;">当前回合：<b id="roundNum">0</b> &nbsp;|&nbsp; 每回合时序：清除易腐资源 → 收入 → 交换（含税收抽取）→ 代谢 → 死亡/繁殖/抚养</div>
+  <button class="btn-calc" data-lock="1" onclick="nextRound()">下一回合（含交换）</button>
+  <button class="btn-calc" data-lock="1" onclick="calculate()" style="background:#f0ad4e;">仅交换计算（不推进回合）</button>
+  <button class="btn-del" data-lock="1" onclick="resetRound()" style="padding:6px 16px;">重置回合</button>
+  <button class="btn-calc" onclick="toggleLog()" id="logToggleBtn" style="background:#6c757d; padding:6px 16px;">隐藏日志</button>
+  <button class="btn-calc" onclick="togglePieChart()" id="pieToggleBtn" style="background:#6c757d; padding:6px 16px;">隐藏扇形图</button>
+  <button class="btn-calc" onclick="toggleHistoryChart()" id="historyToggleBtn" style="background:#6c757d; padding:6px 16px;">显示历史曲线</button>
+  <div class="log" id="log" style="margin-top:12px;">等待操作...（前端 fetch 调用后端 API，引擎在 Python 跑）</div>
+  <div id="pieChartWrap" style="margin-top:12px; padding:8px; border-top:1px solid #ddd;">
+    <b style="font-size:14px;">个体种类比例</b><span style="font-size:12px; color:#888;">（母体与子代归为同类）</span>
+    <div id="pieChart" style="margin-top:6px;"></div>
+  </div>
+  <div id="historyChartWrap" style="display:none; margin-top:12px; padding:8px; border-top:1px solid #ddd;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+      <b style="font-size:14px;">历史曲线</b>
+      <div>
+        <label style="font-size:12px; margin-right:8px;">
+          <input type="checkbox" id="histShowTotal" checked onchange="renderHistoryChart()"> 总人口
+        </label>
+        <label style="font-size:12px; margin-right:8px;">
+          <input type="checkbox" id="histShowGroups" onchange="renderHistoryChart()"> 各类人数
+        </label>
+        <label style="font-size:12px; margin-right:8px;">
+          <input type="checkbox" id="histShowResources" onchange="renderHistoryChart()"> 资源总量
+        </label>
+        <button class="btn-del" onclick="clearHistory()" style="padding:4px 10px; font-size:12px;">清空历史</button>
+      </div>
+    </div>
+    <div id="historyChart" style="margin-top:6px;"></div>
+  </div>
+</div>
+
+<script src="/common.js"></script>
+<script>
+// 首页：仅需在 loadState 后刷新扇形图（loadState 内部已调用 renderPieChart）
+// 启动时自动加载后端状态
+(async () => {
+  try {
+    await loadState();
+    const log = document.getElementById("log");
+    if (log) log.textContent = "已加载后端状态：个体数 " + persons.length + "，回合 " + round;
+  } catch (e) {
+    const log = document.getElementById("log");
+    if (log) log.textContent = "加载后端状态失败：" + e.message + "\n请先启动 app.py（python app.py）";
+  }
+})();
+</script>
+
+</body>
+</html>

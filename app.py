@@ -181,9 +181,17 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
 
-            # 静态文件（根路径 / 或 /economy.html）
-            if method == "GET" and path in ("/", "/economy.html"):
-                self._static("economy.html")
+            # 静态文件路由表
+            STATIC_MAP = {
+                "/": "index.html",
+                "/index.html": "index.html",
+                "/economy": "economy.html",
+                "/economy.html": "economy.html",
+                "/common.css": "common.css",
+                "/common.js": "common.js",
+            }
+            if method == "GET" and path in STATIC_MAP:
+                self._static(STATIC_MAP[path])
                 return
 
             # === API 路由 ===

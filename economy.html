@@ -2,30 +2,14 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>简易经济系统（多实体交换）</title>
-<style>
-  body { font-family: "Microsoft YaHei", Arial, sans-serif; margin: 20px; background: #f5f5f5; color: #333; }
-  h1 { font-size: 20px; }
-  h2 { font-size: 16px; margin-top: 24px; border-left: 4px solid #4a90d9; padding-left: 8px; }
-  h3 { font-size: 14px; margin-top: 14px; margin-bottom: 4px; }
-  .panel { background: #fff; border: 1px solid #ddd; padding: 12px; margin-bottom: 16px; }
-  table { width: 100%; border-collapse: collapse; margin-top: 6px; }
-  th, td { border: 1px solid #ddd; padding: 6px; text-align: center; font-size: 13px; }
-  th { background: #f0f0f0; }
-  input, button { padding: 4px 8px; font-size: 13px; }
-  button { cursor: pointer; margin: 2px; }
-  .btn-add { background: #4a90d9; color: #fff; border: none; }
-  .btn-del { background: #d9534f; color: #fff; border: none; }
-  .btn-calc { background: #5cb85c; color: #fff; border: none; padding: 6px 16px; }
-  .row { display: flex; gap: 6px; margin-bottom: 6px; align-items: center; flex-wrap: wrap; }
-  .row input { flex: 1; min-width: 60px; }
-  .log { background: #fafafa; border: 1px solid #ddd; padding: 8px; font-family: monospace; font-size: 12px; white-space: pre-wrap; max-height: 500px; overflow-y: auto; }
-  .person-item { display: inline-block; background: #eef; border: 1px solid #ccd; padding: 4px 10px; margin: 2px; cursor: pointer; }
-  .person-item.active { background: #4a90d9; color: #fff; }
-  .small { font-size: 12px; color: #888; }
-</style>
+<title>简易经济系统 · 配置管理</title>
+<link rel="stylesheet" href="/common.css">
 </head>
 <body>
+
+<div class="nav-bar">
+  <a class="nav-link" href="/">← 返回回合</a>
+</div>
 
 <h1>简易经济系统（多实体交换）</h1>
 <div class="small">后端 Python 引擎 + 前端 fetch 调用。服务地址：<code id="apiBase">http://127.0.0.1:8000</code></div>
@@ -35,27 +19,6 @@
   <div class="small">后端从 config 文件夹读取 economy_defaults.json 和 economy_persons.json</div>
   <div class="row" style="margin:8px 0;">
     <button class="btn-add" data-lock="1" onclick="importFromConfigFolder()">一键导入 config 配置</button>
-  </div>
-</div>
-
-<div class="panel" id="govPanel">
-  <div style="display:flex; justify-content:space-between; align-items:center;">
-    <h2 style="margin:0;">政府（税收抽取）</h2>
-  </div>
-  <div class="row" style="margin:8px 0; align-items:center;">
-    <label>税率：<input id="govTaxRate" type="number" step="0.01" min="0" max="1" style="width:70px;"></label>
-    <button class="btn-add" data-lock="1" onclick="applyTaxRate()">应用税率</button>
-    <span class="small" id="govTaxRateHint">从每笔成交的支付额中抽取，卖家实收 = 支付 × (1 − 税率)</span>
-  </div>
-  <div class="row" style="align-items:flex-start;">
-    <div style="flex:1; min-width:160px;">
-      <h3>国库（当前持有）</h3>
-      <div id="govTreasury" class="small">—</div>
-    </div>
-    <div style="flex:1; min-width:160px;">
-      <h3>累计征收</h3>
-      <div id="govCollected" class="small">—</div>
-    </div>
   </div>
 </div>
 
@@ -177,151 +140,16 @@
   </div>
 </div>
 
-<div class="panel">
-  <h2>四、回合</h2>
-  <div style="margin-bottom:8px;">当前回合：<b id="roundNum">0</b> &nbsp;|&nbsp; 每回合时序：清除易腐资源 → 收入 → 交换 → 代谢 → 死亡/繁殖/抚养</div>
-  <button class="btn-calc" data-lock="1" onclick="nextRound()">下一回合（含交换）</button>
-  <button class="btn-calc" data-lock="1" onclick="calculate()" style="background:#f0ad4e;">仅交换计算（不推进回合）</button>
-  <button class="btn-del" data-lock="1" onclick="resetRound()" style="padding:6px 16px;">重置回合</button>
-  <button class="btn-calc" onclick="toggleLog()" id="logToggleBtn" style="background:#6c757d; padding:6px 16px;">隐藏日志</button>
-  <button class="btn-calc" onclick="togglePieChart()" id="pieToggleBtn" style="background:#6c757d; padding:6px 16px;">隐藏扇形图</button>
-  <button class="btn-calc" onclick="toggleHistoryChart()" id="historyToggleBtn" style="background:#6c757d; padding:6px 16px;">显示历史曲线</button>
-  <div class="log" id="log" style="margin-top:12px;">等待操作...（前端 fetch 调用后端 API，引擎在 Python 跑）</div>
-  <div id="pieChartWrap" style="margin-top:12px; padding:8px; border-top:1px solid #ddd;">
-    <b style="font-size:14px;">个体种类比例</b><span style="font-size:12px; color:#888;">（母体与子代归为同类）</span>
-    <div id="pieChart" style="margin-top:6px;"></div>
-  </div>
-  <div id="historyChartWrap" style="display:none; margin-top:12px; padding:8px; border-top:1px solid #ddd;">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-      <b style="font-size:14px;">历史曲线</b>
-      <div>
-        <label style="font-size:12px; margin-right:8px;">
-          <input type="checkbox" id="histShowTotal" checked onchange="renderHistoryChart()"> 总人口
-        </label>
-        <label style="font-size:12px; margin-right:8px;">
-          <input type="checkbox" id="histShowGroups" onchange="renderHistoryChart()"> 各类人数
-        </label>
-        <label style="font-size:12px; margin-right:8px;">
-          <input type="checkbox" id="histShowResources" onchange="renderHistoryChart()"> 资源总量
-        </label>
-        <button class="btn-del" onclick="clearHistory()" style="padding:4px 10px; font-size:12px;">清空历史</button>
-      </div>
-    </div>
-    <div id="historyChart" style="margin-top:6px;"></div>
-  </div>
-</div>
-
+<script src="/common.js"></script>
 <script>
-// ===================== 全局状态（前端缓存）=====================
-let defaultSettings = {
-  metabolism: { res: "食物", amount: 1 },
-  income: { res: "钱", amount: 1 },
-  canReproduce: true,
-  attrs: {},
-  needs: [],
-  rules: []
-};
-let persons = [];
-let selectedId = null;
-let round = 0;
-let lastSummary = { round: 0, total: 0, groups: {} };
-
-// 个体列表分页 / 搜索 / 筛选状态
+// ===================== 管理页独有：分页状态 =====================
 let listPage = 1;
 let listPageSize = 50;
 let listFilter = "";          // 搜索关键字
 let listTypeFilter = "";      // 类型筛选（基础名）
 let _searchDebounce = null;
 
-// ===================== API 调用封装 =====================
-async function api(method, path, body) {
-  const opts = { method, headers: { "Content-Type": "application/json" } };
-  if (body !== undefined && body !== null) opts.body = JSON.stringify(body);
-  const r = await fetch(path, opts);
-  let data = null;
-  try { data = await r.json(); } catch (e) { /* 无 JSON 体 */ }
-  if (!r.ok) throw new Error((data && data.detail) || `HTTP ${r.status}`);
-  return data;
-}
-
-// ===================== 工具函数 =====================
-function fmtNum(v) {
-  const n = Number(v);
-  if (!isFinite(n)) return "0";
-  if (Number.isInteger(n)) return String(n);
-  return n.toFixed(2);
-}
-
-function getBaseName(name) {
-  const idx = name.indexOf("#");
-  return idx > 0 ? name.substring(0, idx) : name;
-}
-
-function normMetabolism(m, fbRes) {
-  const fb = (typeof fbRes === "string" && fbRes.trim()) ? fbRes.trim() : "食物";
-  if (m && typeof m === "object") {
-    return { res: String(m.res == null ? "" : m.res).trim() || fb, amount: Math.max(0, Number(m.amount) || 0) };
-  }
-  if (typeof m === "string" && m.trim()) return { res: m.trim(), amount: 1 };
-  return { res: fb, amount: 1 };
-}
-
-function normAsk(r) {
-  let sell = "", buy = "", rate = 0;
-  if (r && typeof r === "object") {
-    if (r.sell !== undefined && r.buy !== undefined) { sell = r.sell; buy = r.buy; rate = r.rate; }
-    else if (r.res1 !== undefined && r.res2 !== undefined) { sell = r.res1; buy = r.res2; rate = r.rate; }
-    else if (r.from !== undefined && r.to !== undefined) { sell = r.from; buy = r.to; rate = r.rate; }
-  }
-  return { sell: String(sell || "").trim(), buy: String(buy || "").trim(), rate: Number(rate) || 0 };
-}
-
-function normalizePerson(p) {
-  // 后端返回的 person 已经是规范结构，这里仅做兜底
-  return {
-    id: p.id,
-    parentId: p.parentId ?? null,
-    name: p.name || "未命名",
-    metabolism: normMetabolism(p.metabolism, "食物"),
-    income: normMetabolism(p.income, "钱"),
-    canReproduce: p.canReproduce !== false,
-    reproThresholdMult: p.reproThresholdMult ?? 2.0,
-    reproInheritMult: p.reproInheritMult ?? 1.0,
-    attrs: p.attrs || {},
-    needs: (p.needs || []).map(n => ({ key: n.key, amount: n.amount })),
-    rules: (p.rules || []).map(r => normAsk(r))
-  };
-}
-
-function normalizeDefaults(d) {
-  return {
-    metabolism: normMetabolism(d.metabolism, "食物"),
-    income: normMetabolism(d.income, "钱"),
-    canReproduce: d.canReproduce !== false,
-    reproThresholdMult: d.reproThresholdMult ?? 2.0,
-    reproInheritMult: d.reproInheritMult ?? 1.0,
-    attrs: d.attrs || {},
-    needs: (d.needs || []).map(n => ({ key: n.key, amount: n.amount })),
-    rules: (d.rules || []).map(r => normAsk(r)),
-    perishable_resources: (d.perishable_resources || []).map(r => String(r))
-  };
-}
-
-// ===================== 日志/扇形图 显示切换 =====================
-function toggleLog() {
-  const logEl = document.getElementById("log");
-  const btn = document.getElementById("logToggleBtn");
-  if (logEl.style.display === "none") { logEl.style.display = ""; btn.textContent = "隐藏日志"; }
-  else { logEl.style.display = "none"; btn.textContent = "显示日志"; }
-}
-
-function togglePieChart() {
-  const wrap = document.getElementById("pieChartWrap");
-  const btn = document.getElementById("pieToggleBtn");
-  if (wrap.style.display === "none") { wrap.style.display = ""; btn.textContent = "隐藏扇形图"; }
-  else { wrap.style.display = "none"; btn.textContent = "显示扇形图"; }
-}
-
+// ===================== 显示切换（管理页独有 panel） =====================
 function toggleDefaults() {
   const body = document.getElementById("defaultsBody");
   const btn = document.getElementById("defaultsToggleBtn");
@@ -341,212 +169,6 @@ function toggleDetail() {
   const btn = document.getElementById("detailToggleBtn");
   if (body.style.display === "none") { body.style.display = ""; btn.textContent = "隐藏个体详情"; }
   else { body.style.display = "none"; btn.textContent = "展开个体详情"; }
-}
-
-function toggleHistoryChart() {
-  const wrap = document.getElementById("historyChartWrap");
-  const btn = document.getElementById("historyToggleBtn");
-  if (wrap.style.display === "none") {
-    wrap.style.display = "";
-    btn.textContent = "隐藏历史曲线";
-    fetchHistoryAndRender();
-  } else {
-    wrap.style.display = "none";
-    btn.textContent = "显示历史曲线";
-  }
-}
-
-// ===================== 历史曲线（SVG 折线图）=====================
-let historyData = [];
-
-async function fetchHistoryAndRender() {
-  try {
-    const r = await fetch('/history?from=0');
-    if (!r.ok) throw new Error('获取历史失败');
-    const j = await r.json();
-    historyData = j.history || [];
-    renderHistoryChart();
-  } catch (e) {
-    document.getElementById("historyChart").innerHTML = `<i style="color:#c00;">${e.message}</i>`;
-  }
-}
-
-function renderHistoryChart() {
-  const box = document.getElementById("historyChart");
-  if (!box) return;
-  if (!historyData.length) {
-    box.innerHTML = "<i>无历史数据，先跑几个回合</i>";
-    return;
-  }
-
-  const showTotal = document.getElementById("histShowTotal").checked;
-  const showGroups = document.getElementById("histShowGroups").checked;
-  const showResources = document.getElementById("histShowResources").checked;
-
-  // 收集所有曲线
-  const series = [];
-  if (showTotal) {
-    series.push({ name: "总人口", data: historyData.map(h => h.total), color: "#2c3e50", dashed: false });
-  }
-  if (showGroups) {
-    const groupColors = ["#3498db", "#e74c3c", "#2ecc71", "#f39c12", "#9b59b6", "#1abc9c", "#e67e22", "#34495e"];
-    const groupNames = new Set();
-    historyData.forEach(h => Object.keys(h.groups || {}).forEach(g => groupNames.add(g)));
-    let ci = 0;
-    for (const g of groupNames) {
-      series.push({
-        name: g,
-        data: historyData.map(h => (h.groups || {})[g] || 0),
-        color: groupColors[ci % groupColors.length],
-        dashed: false,
-      });
-      ci++;
-    }
-  }
-  if (showResources) {
-    const resColors = ["#8e44ad", "#16a085", "#d35400", "#27ae60", "#c0392b", "#2980b9", "#f1c40f"];
-    const resNames = new Set();
-    historyData.forEach(h => Object.keys(h.resource_totals || {}).forEach(r => resNames.add(r)));
-    let ci = 0;
-    for (const r of resNames) {
-      series.push({
-        name: r,
-        data: historyData.map(h => (h.resource_totals || {})[r] || 0),
-        color: resColors[ci % resColors.length],
-        dashed: true,
-      });
-      ci++;
-    }
-  }
-
-  if (!series.length) {
-    box.innerHTML = "<i>请至少勾选一项</i>";
-    return;
-  }
-
-  // 计算 Y 轴范围
-  let yMin = Infinity, yMax = -Infinity;
-  for (const s of series) {
-    for (const v of s.data) {
-      if (v < yMin) yMin = v;
-      if (v > yMax) yMax = v;
-    }
-  }
-  if (yMin === Infinity) { yMin = 0; yMax = 1; }
-  if (yMin > 0) yMin = 0;
-  if (yMax === yMin) yMax = yMin + 1;
-
-  const W = 700, H = 280, padL = 50, padR = 10, padT = 10, padB = 30;
-  const plotW = W - padL - padR, plotH = H - padT - padB;
-  const n = historyData.length;
-  const xScale = (i) => padL + (n <= 1 ? plotW / 2 : (i / (n - 1)) * plotW);
-  const yScale = (v) => padT + plotH - ((v - yMin) / (yMax - yMin)) * plotH;
-
-  // Y 轴刻度（4 格）
-  const yTicks = [];
-  for (let i = 0; i <= 4; i++) {
-    const v = yMin + (yMax - yMin) * i / 4;
-    yTicks.push({ v, y: yScale(v) });
-  }
-
-  // X 轴刻度（最多 8 个）
-  const xStep = Math.max(1, Math.floor(n / 8));
-  const xTicks = [];
-  for (let i = 0; i < n; i += xStep) {
-    xTicks.push({ i, label: historyData[i].round, x: xScale(i) });
-  }
-
-  // 构建 SVG
-  let svg = `<svg width="${W}" height="${H}" style="background:#fafafa; font-family:monospace; font-size:10px;">`;
-
-  // Y 网格 + 刻度
-  for (const t of yTicks) {
-    svg += `<line x1="${padL}" y1="${t.y}" x2="${W - padR}" y2="${t.y}" stroke="#eee" stroke-width="1"/>`;
-    svg += `<text x="${padL - 4}" y="${t.y + 3}" text-anchor="end" fill="#666">${Math.round(t.v)}</text>`;
-  }
-
-  // X 刻度
-  for (const t of xTicks) {
-    svg += `<line x1="${t.x}" y1="${padT + plotH}" x2="${t.x}" y2="${padT + plotH + 4}" stroke="#999"/>`;
-    svg += `<text x="${t.x}" y="${padT + plotH + 16}" text-anchor="middle" fill="#666">${t.label}</text>`;
-  }
-  svg += `<text x="${W / 2}" y="${H - 2}" text-anchor="middle" fill="#666">回合</text>`;
-
-  // 曲线
-  for (const s of series) {
-    let path = "";
-    s.data.forEach((v, i) => {
-      const x = xScale(i), y = yScale(v);
-      path += (i === 0 ? "M" : " L") + x + "," + y;
-    });
-    const dash = s.dashed ? ' stroke-dasharray="4,2"' : '';
-    svg += `<path d="${path}" fill="none" stroke="${s.color}" stroke-width="1.8"${dash}/>`;
-  }
-
-  // 图例
-  let lx = padL, ly = padT + 2;
-  for (const s of series) {
-    const dash = s.dashed ? ' stroke-dasharray="4,2"' : '';
-    svg += `<line x1="${lx}" y1="${ly + 4}" x2="${lx + 16}" y2="${ly + 4}" stroke="${s.color}" stroke-width="2"${dash}/>`;
-    svg += `<text x="${lx + 20}" y="${ly + 8}" fill="${s.color}">${s.name}</text>`;
-    lx += s.name.length * 8 + 50;
-    if (lx > W - 80) { lx = padL; ly += 14; }
-  }
-
-  svg += "</svg>";
-  box.innerHTML = svg;
-}
-
-async function clearHistory() {
-  if (!confirm("确定清空所有历史数据？")) return;
-  try {
-    await fetch('/clear-history', { method: 'POST' });
-    historyData = [];
-    renderHistoryChart();
-  } catch (e) {
-    alert(e.message);
-  }
-}
-
-// ===================== 扇形图（用后端 summary.groups）=====================
-function renderPieChart() {
-  const box = document.getElementById("pieChart");
-  if (!box) return;
-  const groups = lastSummary.groups || {};
-  const entries = Object.entries(groups).sort((a, b) => b[1] - a[1]);
-  const total = entries.reduce((s, e) => s + e[1], 0);
-  if (total === 0) { box.innerHTML = "<i>无个体</i>"; return; }
-  const colors = ["#3498db", "#e74c3c", "#2ecc71", "#f39c12", "#9b59b6", "#1abc9c", "#e67e22", "#34495e"];
-  const cx = 80, cy = 80, r = 65;
-  let startAngle = -Math.PI / 2;
-  let paths = "", legend = "";
-  entries.forEach((e, i) => {
-    const [name, count] = e;
-    const pct = count / total;
-    const endAngle = startAngle + pct * Math.PI * 2;
-    const x1 = cx + r * Math.cos(startAngle);
-    const y1 = cy + r * Math.sin(startAngle);
-    const x2 = cx + r * Math.cos(endAngle);
-    const y2 = cy + r * Math.sin(endAngle);
-    const large = (endAngle - startAngle) > Math.PI ? 1 : 0;
-    const color = colors[i % colors.length];
-    if (pct >= 1) {
-      paths += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${color}" stroke="#fff" stroke-width="1"/>`;
-    } else {
-      paths += `<path d="M${cx},${cy} L${x1},${y1} A${r},${r} 0 ${large} 1 ${x2},${y2} Z" fill="${color}" stroke="#fff" stroke-width="1"/>`;
-    }
-    legend += `<div style="display:flex;align-items:center;margin:2px 0;">
-      <span style="display:inline-block;width:12px;height:12px;background:${color};margin-right:6px;border-radius:2px;"></span>
-      <span style="font-size:13px;">${name}：${count}（${(pct * 100).toFixed(0)}%）</span>
-    </div>`;
-    startAngle = endAngle;
-  });
-  box.innerHTML = `
-    <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
-      <svg width="160" height="160" viewBox="0 0 160 160">${paths}<text x="${cx}" y="${cy + 5}" text-anchor="middle" font-size="16" font-weight="bold" fill="#333">${total}</text></svg>
-      <div style="flex:1;min-width:120px;">${legend}</div>
-    </div>
-  `;
 }
 
 // ===================== 基础设置渲染 =====================
@@ -1136,13 +758,7 @@ async function importDefaults(event) {
   event.target.value = "";
 }
 
-// ===================== 操作互斥锁（防止连点导致数据竞态）=====================
-let _busy = false;
-function _setBusy(b) {
-  _busy = b;
-  document.querySelectorAll('button[data-lock]').forEach(btn => btn.disabled = b);
-}
-
+// ===================== 一键导入 config 文件夹 =====================
 async function importFromConfigFolder() {
   if (_busy) return;
   _setBusy(true);
@@ -1153,9 +769,8 @@ async function importFromConfigFolder() {
     round = r.summary.round;
     lastSummary = r.summary;
     selectedId = null;
-    document.getElementById("detailPanel").style.display = "none";
-    document.getElementById("roundNum").textContent = round;
-    document.getElementById("log").textContent = r.log;
+    const detailPanel = document.getElementById("detailPanel");
+    if (detailPanel) detailPanel.style.display = "none";
     renderGovernment(r.government);
     renderAll();
     alert("一键导入 config 完成");
@@ -1166,150 +781,19 @@ async function importFromConfigFolder() {
   }
 }
 
-// ===================== 回合 / 交换计算 =====================
-async function nextRound() {
-  if (_busy) return;
-  if (persons.length === 0) { alert("请先创建个体"); return; }
-  _setBusy(true);
-  try {
-    const r = await api("POST", "/next-round");
-    persons = r.persons.map(normalizePerson);
-    round = r.summary.round;
-    lastSummary = r.summary;
-    document.getElementById("roundNum").textContent = round;
-    document.getElementById("log").textContent = r.log;
-    renderGovernment(r.government);
-    renderPersonList();
-    if (selectedId !== null) renderDetail();
-    _refreshHistoryIfVisible();
-  } catch (e) { alert("下一回合失败：" + e.message); }
-  finally { _setBusy(false); }
-}
-
-async function calculate() {
-  if (_busy) return;
-  if (persons.length === 0) { alert("请先创建个体"); return; }
-  _setBusy(true);
-  try {
-    const r = await api("POST", "/calculate");
-    persons = r.persons.map(normalizePerson);
-    lastSummary = r.summary;
-    document.getElementById("log").textContent = r.log;
-    renderGovernment(r.government);
-    renderPersonList();
-    if (selectedId !== null) renderDetail();
-  } catch (e) { alert("交换计算失败：" + e.message); }
-  finally { _setBusy(false); }
-}
-
-async function nextRoundAndCalculate() {
-  if (_busy) return;
-  if (persons.length === 0) { alert("请先创建个体"); return; }
-  _setBusy(true);
-  try {
-    const r = await api("POST", "/next-and-calc");
-    persons = r.persons.map(normalizePerson);
-    round = r.summary.round;
-    lastSummary = r.summary;
-    document.getElementById("roundNum").textContent = round;
-    document.getElementById("log").textContent = r.log;
-    renderGovernment(r.government);
-    renderPersonList();
-    if (selectedId !== null) renderDetail();
-    _refreshHistoryIfVisible();
-  } catch (e) { alert("操作失败：" + e.message); }
-  finally { _setBusy(false); }
-}
-
-async function resetRound() {
-  if (_busy) return;
-  if (!confirm("确定要重置回合吗？\n\n回合数将归零，并从 config 文件夹重新加载基础设置和个体列表。\n\n⚠️ 当前所有修改都会被覆盖。")) return;
-  _setBusy(true);
-  try {
-    const r = await api("POST", "/reset");
-    defaultSettings = normalizeDefaults(r.defaults);
-    persons = r.persons.map(normalizePerson);
-    round = r.summary.round;
-    lastSummary = r.summary;
-    selectedId = null;
-    document.getElementById("detailPanel").style.display = "none";
-    document.getElementById("roundNum").textContent = round;
-    document.getElementById("log").textContent = r.log;
-    renderGovernment(r.government);
-    renderAll();
-    _refreshHistoryIfVisible();
-  } catch (e) { alert("重置失败：" + e.message); }
-  finally { _setBusy(false); }
-}
-
-// ===================== 操作后自动刷新历史曲线 =====================
-function _refreshHistoryIfVisible() {
-  const wrap = document.getElementById("historyChartWrap");
-  if (wrap && wrap.style.display !== "none") {
-    fetchHistoryAndRender();
-  }
-}
-
-// ===================== 政府面板 =====================
-function _fmtGovDict(d) {
-  if (!d || Object.keys(d).length === 0) return "—";
-  return Object.entries(d).map(([k, v]) => `${k}: ${Number(v).toFixed(2)}`).join("，");
-}
-
-function renderGovernment(gov) {
-  if (!gov) return;
-  const rateInput = document.getElementById("govTaxRate");
-  if (rateInput && document.activeElement !== rateInput) {
-    rateInput.value = gov.tax_rate;
-  }
-  document.getElementById("govTreasury").textContent = _fmtGovDict(gov.treasury);
-  document.getElementById("govCollected").textContent = _fmtGovDict(gov.total_collected);
-}
-
-async function applyTaxRate() {
-  if (_busy) return;
-  const rate = parseFloat(document.getElementById("govTaxRate").value);
-  if (isNaN(rate) || rate < 0 || rate > 1) {
-    alert("税率必须在 0~1 之间");
-    return;
-  }
-  _setBusy(true);
-  try {
-    const r = await api("PUT", "/government", { tax_rate: rate });
-    renderGovernment(r.government);
-  } catch (e) {
-    alert("设置税率失败：" + e.message);
-  } finally {
-    _setBusy(false);
-  }
-}
-
-// ===================== 渲染入口 =====================
+// ===================== 管理页渲染入口 =====================
 function renderAll() {
   renderDefaults();
   renderPersonList();
   if (selectedId !== null) renderDetail();
 }
 
-// ===================== 启动：拉取后端状态 =====================
-async function loadState() {
-  const s = await api("GET", "/state");
-  defaultSettings = normalizeDefaults(s.defaults);
-  persons = s.persons.map(normalizePerson);
-  round = s.round;
-  lastSummary = s.summary;
-  document.getElementById("roundNum").textContent = round;
-  renderGovernment(s.government);
-  renderAll();
-}
-
 // 启动时自动加载后端状态
 (async () => {
   try {
     await loadState();
-    document.getElementById("log").textContent = "已加载后端状态：个体数 " + persons.length + "，回合 " + round;
   } catch (e) {
-    document.getElementById("log").textContent = "加载后端状态失败：" + e.message + "\n请先启动 app.py（python app.py）";
+    alert("加载后端状态失败：" + e.message + "\n请先启动 app.py（python app.py）");
   }
 })();
 </script>
