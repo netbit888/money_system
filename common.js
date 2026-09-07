@@ -9,8 +9,13 @@ let defaultSettings = {
   needs: [],
   rules: []
 };
+// persons 只缓存「当前页」个体（分页/搜索由服务端完成），总量看 personsTotal
 let persons = [];
+let personsTotal = 0;
 let selectedId = null;
+// 选中个体（详情面板数据源）与其母体名：按需从 GET /person/{id} 拉取
+let selectedPerson = null;
+let selectedParentName = null;
 let round = 0;
 let lastSummary = { round: 0, total: 0, groups: {} };
 
@@ -147,6 +152,20 @@ function toggleHistoryChart() {
   }
 }
 
+function toggleEconChart() {
+  const wrap = document.getElementById("econChartWrap");
+  const btn = document.getElementById("econToggleBtn");
+  if (!wrap || !btn) return;
+  if (wrap.style.display === "none") {
+    wrap.style.display = "";
+    btn.textContent = "隐藏经济指标";
+  } else {
+    wrap.style.display = "none";
+    btn.textContent = "显示经济指标";
+  }
+  fetchHistoryAndRender();
+}
+
 // ===================== 历史曲线（SVG 折线图）=====================
 // 可滑动时间窗口：只拉取 [end-window, end] 区间，避免回合数暴涨后全量绘制。
 let histWindow = 100;        // 窗口大小（回合）
@@ -154,6 +173,11 @@ let histFollowLatest = true; // 跟随最新：滑块贴最右，自动跑时随
 
 function _historyWrapVisible() {
   const wrap = document.getElementById("historyChartWrap");
+  return wrap && wrap.style.display !== "none";
+}
+
+function _econWrapVisible() {
+  const wrap = document.getElementById("econChartWrap");
   return wrap && wrap.style.display !== "none";
 }
 
@@ -187,7 +211,7 @@ function onHistSlider() {
 }
 
 async function fetchHistoryAndRender() {
-  if (!_historyWrapVisible()) return;
+  if (!_historyWrapVisible() && !_econWrapVisible()) return;
   try {
     const slider = document.getElementById("histPos");
     if (slider) {
@@ -204,7 +228,8 @@ async function fetchHistoryAndRender() {
     if (!r.ok) throw new Error('获取历史失败');
     const j = await r.json();
     historyData = j.history || [];
-    renderHistoryChart();
+    if (_historyWrapVisible()) renderHistoryChart();
+    if (_econWrapVisible()) renderEconChart();
     updateHistRangeLabel(start, end);
   } catch (e) {
     const box = document.getElementById("historyChart");
@@ -301,7 +326,7 @@ function renderHistoryChart() {
   }
 
   // 构建 SVG
-  let svg = `<svg width="${W}" height="${H}" style="background:#fafafa; font-family:monospace; font-size:10px;">`;
+  let svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="background:#fafafa; max-width:${W}px; font-family:inherit; font-size:10px;">`;
 
   // Y 网格 + 刻度
   for (const t of yTicks) {
@@ -339,7 +364,6 @@ function renderHistoryChart() {
 
   svg += "</svg>";
   box.innerHTML = svg;
-  renderEconChart();
 }
 
 // ===================== 经济指标图（双 Y 轴）=====================
@@ -405,7 +429,7 @@ function renderEconChart() {
   const yLeft = (v) => padT + plotH - ((v - lMin) / (lMax - lMin)) * plotH;
   const yRight = (v) => padT + plotH - ((v - rMin) / (rMax - rMin)) * plotH;
 
-  let svg = `<svg width="${W}" height="${H}" style="background:#fafafa; font-family:monospace; font-size:10px;">`;
+  let svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="background:#fafafa; max-width:${W}px; font-family:inherit; font-size:10px;">`;
 
   // 左轴刻度（4 格）
   for (let k = 0; k <= 4; k++) {
@@ -472,8 +496,7 @@ async function clearHistory() {
 }
 
 function _refreshHistoryIfVisible() {
-  const wrap = document.getElementById("historyChartWrap");
-  if (wrap && wrap.style.display !== "none") {
+  if (_historyWrapVisible() || _econWrapVisible()) {
     fetchHistoryAndRender();
   }
 }
@@ -557,15 +580,30 @@ async function applyTaxRate() {
 }
 
 // ===================== 回合 / 交换计算 =====================
-// 注：renderPersonList / renderDetail 由管理页提供；首页无此函数时通过 typeof 检查跳过
-//     renderPieChart 在两页均存在（已做 null 检查）
+// 注：renderPersonList / renderDetail / refreshSelected 由管理页提供；
+//     首页无此函数时通过 typeof 检查跳过。renderPieChart 在两页均存在（已做 null 检查）
+
+// 回合响应不再携带全量 persons，这里按「当前可见面板」补拉：
+//   管理页 → 当前页个体 + 选中个体；首页 → 只刷新饼图（不发额外请求）
+async function refreshPersonViews() {
+  if (document.getElementById("personList")) {
+    if (typeof renderPersonList === 'function') await renderPersonList();
+  } else {
+    renderPieChart();
+  }
+  const panel = document.getElementById("detailPanel");
+  if (panel && panel.style.display !== "none" && typeof refreshSelected === 'function') {
+    await refreshSelected();
+  }
+}
+
 async function nextRound() {
   if (_busy) return;
-  if (persons.length === 0) { alert("请先创建个体"); return; }
+  if ((lastSummary.total || 0) === 0) { alert("请先创建个体"); return; }
   _setBusy(true);
   try {
     const r = await api("POST", "/next-round");
-    persons = r.persons.map(normalizePerson);
+    personsTotal = (r.summary && r.summary.total) || 0;
     round = r.summary.round;
     lastSummary = r.summary;
     const rn = document.getElementById("roundNum");
@@ -573,9 +611,7 @@ async function nextRound() {
     const log = document.getElementById("log");
     if (log) log.textContent = r.log;
     renderGovernment(r.government);
-    if (typeof renderPersonList === 'function') renderPersonList();  // 内部会调 renderPieChart
-    else renderPieChart();
-    if (typeof renderDetail === 'function' && selectedId !== null) renderDetail();
+    await refreshPersonViews();
     _refreshHistoryIfVisible();
   } catch (e) { alert("下一回合失败：" + e.message); if (_autoRunning) stopAuto(); }
   finally { _setBusy(false); }
@@ -605,7 +641,7 @@ function updateAutoBtn() {
 }
 
 function startAuto() {
-  if (persons.length === 0) { alert("请先创建个体，再开始自动运行"); return; }
+  if ((lastSummary.total || 0) === 0) { alert("请先创建个体，再开始自动运行"); return; }
   _autoRunning = true;
   updateAutoBtn();
   autoStep();
@@ -630,29 +666,27 @@ function autoStep() {
 
 async function calculate() {
   if (_busy) return;
-  if (persons.length === 0) { alert("请先创建个体"); return; }
+  if ((lastSummary.total || 0) === 0) { alert("请先创建个体"); return; }
   _setBusy(true);
   try {
     const r = await api("POST", "/calculate");
-    persons = r.persons.map(normalizePerson);
+    personsTotal = (r.summary && r.summary.total) || 0;
     lastSummary = r.summary;
     const log = document.getElementById("log");
     if (log) log.textContent = r.log;
     renderGovernment(r.government);
-    if (typeof renderPersonList === 'function') renderPersonList();
-    else renderPieChart();
-    if (typeof renderDetail === 'function' && selectedId !== null) renderDetail();
+    await refreshPersonViews();
   } catch (e) { alert("交换计算失败：" + e.message); }
   finally { _setBusy(false); }
 }
 
 async function nextRoundAndCalculate() {
   if (_busy) return;
-  if (persons.length === 0) { alert("请先创建个体"); return; }
+  if ((lastSummary.total || 0) === 0) { alert("请先创建个体"); return; }
   _setBusy(true);
   try {
     const r = await api("POST", "/next-and-calc");
-    persons = r.persons.map(normalizePerson);
+    personsTotal = (r.summary && r.summary.total) || 0;
     round = r.summary.round;
     lastSummary = r.summary;
     const rn = document.getElementById("roundNum");
@@ -660,9 +694,7 @@ async function nextRoundAndCalculate() {
     const log = document.getElementById("log");
     if (log) log.textContent = r.log;
     renderGovernment(r.government);
-    if (typeof renderPersonList === 'function') renderPersonList();
-    else renderPieChart();
-    if (typeof renderDetail === 'function' && selectedId !== null) renderDetail();
+    await refreshPersonViews();
     _refreshHistoryIfVisible();
   } catch (e) { alert("操作失败：" + e.message); }
   finally { _setBusy(false); }
@@ -675,10 +707,12 @@ async function resetRound() {
   try {
     const r = await api("POST", "/reset");
     defaultSettings = normalizeDefaults(r.defaults);
-    persons = r.persons.map(normalizePerson);
+    persons = [];
+    personsTotal = (r.summary && r.summary.total) || 0;
     round = r.summary.round;
     lastSummary = r.summary;
     selectedId = null;
+    selectedPerson = null;
     const detailPanel = document.getElementById("detailPanel");
     if (detailPanel) detailPanel.style.display = "none";
     const rn = document.getElementById("roundNum");
@@ -698,7 +732,8 @@ async function resetRound() {
 async function loadState() {
   const s = await api("GET", "/state");
   defaultSettings = normalizeDefaults(s.defaults);
-  persons = s.persons.map(normalizePerson);
+  persons = [];
+  personsTotal = (s.summary && s.summary.total) || 0;
   round = s.round;
   lastSummary = s.summary;
   const rn = document.getElementById("roundNum");

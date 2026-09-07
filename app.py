@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from engine import (
     Simulation, DefaultSettings, Person, Metabolism, Need, Rule, Government,
-    norm_ask, norm_metabolism, export_persons, export_defaults,
+    norm_ask, norm_metabolism, export_persons, export_defaults, get_base_name,
 )
 
 # ===================== 全局引擎 =====================
@@ -70,10 +70,6 @@ def government_to_dict(g: Government) -> dict:
         "treasury": dict(g.treasury),
         "total_collected": dict(g.total_collected),
     }
-
-
-def all_persons() -> list[dict]:
-    return [person_to_dict(p) for p in sim.persons]
 
 
 def person_from_dict(d: dict) -> Person:
@@ -218,10 +214,11 @@ class Handler(BaseHTTPRequestHandler):
 
             # === API 路由 ===
             if method == "GET" and path == "/state":
+                # 注意：不再回传全量 persons（N 大时单响应上百 MB）。
+                # 个体列表走 /persons 分页，个体详情走 GET /person/{id}。
                 self._json({
                     "round": sim.round,
                     "defaults": defaults_to_dict(sim.defaults),
-                    "persons": all_persons(),
                     "summary": sim.summary(),
                     "government": government_to_dict(sim.government),
                 })
@@ -229,6 +226,28 @@ class Handler(BaseHTTPRequestHandler):
 
             if method == "GET" and path == "/defaults":
                 self._json(defaults_to_dict(sim.defaults))
+                return
+
+            # 个体列表：搜索 / 类型筛选 / 分页全部在服务端完成，只回传当前页
+            if method == "GET" and path == "/persons":
+                q = (query.get("q", [""])[0] or "").strip().lower()
+                typ = (query.get("type", [""])[0] or "").strip()
+                offset = max(0, int(query.get("offset", ["0"])[0]))
+                limit = min(500, max(1, int(query.get("limit", ["50"])[0])))
+                matched = []
+                for p in sim.persons:
+                    if typ and get_base_name(p.name) != typ:
+                        continue
+                    if q and (q not in p.name.lower()) and (q not in str(p.id)):
+                        continue
+                    matched.append(p)
+                self._json({
+                    "total": len(sim.persons),
+                    "total_filtered": len(matched),
+                    "offset": offset,
+                    "limit": limit,
+                    "items": [person_to_dict(p) for p in matched[offset:offset + limit]],
+                })
                 return
 
             # 历史曲线数据（持久化 + 历史曲线图用）
@@ -271,6 +290,17 @@ class Handler(BaseHTTPRequestHandler):
             m = re_match(r"^/person/(\d+)/?$", path)
             if m:
                 pid = int(m.group(1))
+                if method == "GET":
+                    p = sim.find(pid)
+                    if not p:
+                        raise HttpError(404, "个体不存在")
+                    parent = sim.find(p.parentId) if p.parentId else None
+                    self._json({
+                        "person": person_to_dict(p),
+                        "parentName": parent.name if parent else None,
+                        "round": sim.round,
+                    })
+                    return
                 if method == "DELETE":
                     sim.del_person(pid)
                     self._json({"ok": True})
@@ -289,17 +319,17 @@ class Handler(BaseHTTPRequestHandler):
 
             if method == "POST" and path == "/next-round":
                 log = sim.next_round()
-                self._json({"log": log, "summary": sim.summary(), "persons": all_persons(), "government": government_to_dict(sim.government)})
+                self._json({"log": log, "summary": sim.summary(), "government": government_to_dict(sim.government)})
                 return
 
             if method == "POST" and path == "/calculate":
                 log = sim.calculate()
-                self._json({"log": log, "summary": sim.summary(), "persons": all_persons(), "government": government_to_dict(sim.government)})
+                self._json({"log": log, "summary": sim.summary(), "government": government_to_dict(sim.government)})
                 return
 
             if method == "POST" and path == "/next-and-calc":
                 log = sim.next_round_and_calculate()
-                self._json({"log": log, "summary": sim.summary(), "persons": all_persons(), "government": government_to_dict(sim.government)})
+                self._json({"log": log, "summary": sim.summary(), "government": government_to_dict(sim.government)})
                 return
 
             if method == "POST" and path in ("/reset", "/load-config-folder"):
@@ -307,7 +337,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({
                     "log": log,
                     "summary": sim.summary(),
-                    "persons": all_persons(),
                     "defaults": defaults_to_dict(sim.defaults),
                     "government": government_to_dict(sim.government),
                 })

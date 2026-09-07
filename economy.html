@@ -7,6 +7,7 @@
 </head>
 <body>
 
+<div class="container">
 <div class="nav-bar">
   <a class="nav-link" href="/">← 返回回合</a>
 </div>
@@ -161,14 +162,14 @@
     <div id="detailContent"></div>
   </div>
 </div>
+</div>
 
 <script src="/common.js"></script>
 <script>
 // ===================== 管理页独有：分页状态 =====================
+// 搜索 / 类型筛选 / 分页全部由服务端完成（GET /persons），前端只持有当前页
 let listPage = 1;
 let listPageSize = 50;
-let listFilter = "";          // 搜索关键字
-let listTypeFilter = "";      // 类型筛选（基础名）
 let _searchDebounce = null;
 
 // ===================== 显示切换（管理页独有 panel） =====================
@@ -434,38 +435,28 @@ async function putDefaults() {
 }
 
 // ===================== 个体列表 =====================
-function getFilteredPersons() {
-  let arr = persons;
-  if (listTypeFilter) {
-    arr = arr.filter(p => getBaseName(p.name) === listTypeFilter);
-  }
-  if (listFilter) {
-    const kw = listFilter.toLowerCase();
-    arr = arr.filter(p => p.name.toLowerCase().includes(kw) || String(p.id).includes(kw));
-  }
-  return arr;
-}
-
+// 类型下拉直接来自 summary.groups（后端分组结果），不再遍历全部个体
 function syncTypeOptions() {
   const sel = document.getElementById("listType");
-  const types = new Set(persons.map(p => getBaseName(p.name)));
+  const groups = (lastSummary && lastSummary.groups) || {};
+  const types = Object.keys(groups).sort();
   const current = sel.value;
   const opts = ['<option value="">全部类型</option>'];
-  for (const t of [...types].sort()) {
+  for (const t of types) {
     opts.push(`<option value="${t}">${t}</option>`);
   }
   const newHtml = opts.join("");
   if (sel.innerHTML !== newHtml) {
     sel.innerHTML = newHtml;
-    if ([...types].includes(current)) sel.value = current;
-    else { sel.value = ""; listTypeFilter = ""; }
+    if (types.includes(current)) sel.value = current;
+    else sel.value = "";
   }
 }
 
-function renderPersonList() {
+async function renderPersonList() {
   const box = document.getElementById("personList");
   const controls = document.getElementById("listControls");
-  if (persons.length === 0) {
+  if ((lastSummary.total || 0) === 0) {
     box.innerHTML = "<i>无个体，请先创建</i>";
     controls.style.display = "none";
     renderPieChart();
@@ -475,19 +466,23 @@ function renderPersonList() {
 
   syncTypeOptions();
 
-  const filtered = getFilteredPersons();
-  const totalPages = Math.max(1, Math.ceil(filtered.length / listPageSize));
-  if (listPage > totalPages) listPage = totalPages;
   if (listPage < 1) listPage = 1;
+  const q = (document.getElementById("listSearch").value || "").trim();
+  const type = document.getElementById("listType").value || "";
+  const offset = (listPage - 1) * listPageSize;
+  const r = await api("GET", `/persons?offset=${offset}&limit=${listPageSize}`
+    + `&q=${encodeURIComponent(q)}&type=${encodeURIComponent(type)}`);
+  persons = r.items.map(normalizePerson);
+  personsTotal = r.total_filtered;
 
-  const start = (listPage - 1) * listPageSize;
-  const pageItems = filtered.slice(start, start + listPageSize);
+  const totalPages = Math.max(1, Math.ceil(r.total_filtered / listPageSize));
+  if (listPage > totalPages) { listPage = totalPages; return renderPersonList(); }
 
   let html = "";
-  if (pageItems.length === 0) {
+  if (persons.length === 0) {
     html = "<i>当前筛选无结果</i>";
   } else {
-    pageItems.forEach(p => {
+    persons.forEach(p => {
       const cls = p.id === selectedId ? "person-item active" : "person-item";
       html += `<span class="${cls}" onclick="selectPerson(${p.id})">${p.name}` +
               ` <button class="btn-del" onclick="event.stopPropagation();delPerson(${p.id})">删除</button></span>`;
@@ -495,7 +490,7 @@ function renderPersonList() {
   }
   box.innerHTML = html;
 
-  document.getElementById("pageInfo").textContent = `${listPage}/${totalPages} (共 ${filtered.length})`;
+  document.getElementById("pageInfo").textContent = `${listPage}/${totalPages} (共 ${r.total_filtered})`;
   document.getElementById("prevBtn").disabled = listPage <= 1;
   document.getElementById("nextBtn").disabled = listPage >= totalPages;
 
@@ -505,14 +500,12 @@ function renderPersonList() {
 function onSearchInput() {
   clearTimeout(_searchDebounce);
   _searchDebounce = setTimeout(() => {
-    listFilter = document.getElementById("listSearch").value.trim();
     listPage = 1;
     renderPersonList();
   }, 200);
 }
 
 function onListFilterChange() {
-  listTypeFilter = document.getElementById("listType").value;
   listPage = 1;
   renderPersonList();
 }
@@ -528,26 +521,48 @@ function prevPage() {
 }
 
 function nextPage() {
-  const filtered = getFilteredPersons();
-  const totalPages = Math.max(1, Math.ceil(filtered.length / listPageSize));
+  const totalPages = Math.max(1, Math.ceil(personsTotal / listPageSize));
   if (listPage < totalPages) { listPage++; renderPersonList(); }
 }
 
-function selectPerson(id) {
+async function selectPerson(id) {
   selectedId = id;
+  await refreshSelected();   // 拉取该个体（含母体名）并渲染详情
   renderPersonList();
-  renderDetail();
 }
 
 // ===================== 个体详情 =====================
+// 详情面板的数据源是 selectedPerson（按需从 GET /person/{id} 拉取），
+// 而不是当前页缓存 persons —— 母体 / 选中项都可能不在当前页。
+function getSelected(id) {
+  return (selectedPerson && selectedPerson.id === id) ? selectedPerson : null;
+}
+
+async function refreshSelected() {
+  if (selectedId === null) return;
+  try {
+    const r = await api("GET", `/person/${selectedId}`);
+    selectedPerson = normalizePerson(r.person);
+    selectedParentName = r.parentName || null;
+    if (typeof r.round === "number") round = r.round;
+    renderDetail();
+  } catch (e) {
+    // 个体已死亡或被删除：收起面板，回到未选中状态
+    selectedId = null;
+    selectedPerson = null;
+    selectedParentName = null;
+    const panel = document.getElementById("detailPanel");
+    if (panel) panel.style.display = "none";
+  }
+}
+
 function renderDetail() {
   const panel = document.getElementById("detailPanel");
-  const p = persons.find(x => x.id === selectedId);
-  if (!p) { panel.style.display = "none"; return; }
+  const p = selectedPerson;
+  if (!p || p.id !== selectedId) { panel.style.display = "none"; return; }
   panel.style.display = "block";
 
-  const parent = p.parentId ? persons.find(x => x.id === p.parentId) : null;
-  const parentName = parent ? parent.name : '已死亡';
+  const parentName = p.parentId ? (selectedParentName || '已死亡') : null;
   let rearInfo = '';
   if (p.parentId && p.dependent !== false && p.birthRound !== null && p.birthRound !== undefined) {
     const maxR = (p.weanMaxRounds === null || p.weanMaxRounds === undefined)
@@ -712,7 +727,8 @@ function renderPersonReproPreview(p) {
 
 // 个体属性编辑（修改本地缓存 + PUT 推送）
 function updatePersonName(id, v) {
-  const p = persons.find(x => x.id === id);
+  const p = getSelected(id);
+  if (!p) return;
   const trimmed = v.trim();
   if (!trimmed) { alert("个体名字不能为空，已恢复原值"); renderDetail(); return; }
   p.name = trimmed;
@@ -720,7 +736,8 @@ function updatePersonName(id, v) {
   putPerson(p);
 }
 function updatePersonMetabolism(id, field, v) {
-  const p = persons.find(x => x.id === id);
+  const p = getSelected(id);
+  if (!p) return;
   if (field === "res") {
     const trimmed = String(v).trim();
     if (!trimmed) { alert("代谢资源名不能为空，已恢复原值"); renderDetail(); return; }
@@ -734,7 +751,8 @@ function updatePersonMetabolism(id, field, v) {
   putPerson(p);
 }
 function updatePersonIncome(id, field, v) {
-  const p = persons.find(x => x.id === id);
+  const p = getSelected(id);
+  if (!p) return;
   if (field === "res") {
     const trimmed = String(v).trim();
     if (!trimmed) { alert("收入资源名不能为空，已恢复原值"); renderDetail(); return; }
@@ -747,14 +765,14 @@ function updatePersonIncome(id, field, v) {
   putPerson(p);
 }
 function updatePersonCanReproduce(id, v) {
-  const p = persons.find(x => x.id === id);
+  const p = getSelected(id);
   if (!p) return;
   p.canReproduce = !!v;
   renderDetail();
   putPerson(p);
 }
 function updatePersonRepro(id, field, v) {
-  const p = persons.find(x => x.id === id);
+  const p = getSelected(id);
   if (!p) return;
   const num = parseFloat(v);
   if (field === 'threshold') {
@@ -771,7 +789,7 @@ function updatePersonRepro(id, field, v) {
   putPerson(p);
 }
 function updatePersonWean(id, field, v) {
-  const p = persons.find(x => x.id === id);
+  const p = getSelected(id);
   if (!p) return;
   const raw = String(v).trim();
   if (raw === "") {                       // 留空 = 继承全局养育期
@@ -793,18 +811,21 @@ function updatePersonWean(id, field, v) {
   putPerson(p);
 }
 function updatePersonAttr(id, k, v) {
-  const p = persons.find(x => x.id === id);
+  const p = getSelected(id);
+  if (!p) return;
   p.attrs[k] = parseFloat(v) || 0;
   putPerson(p);
 }
 function deletePersonAttr(id, k) {
-  const p = persons.find(x => x.id === id);
+  const p = getSelected(id);
+  if (!p) return;
   delete p.attrs[k];
   renderDetail();
   putPerson(p);
 }
 function addPersonAttr(id) {
-  const p = persons.find(x => x.id === id);
+  const p = getSelected(id);
+  if (!p) return;
   const k = document.getElementById(`pAttrKey_${id}`).value.trim();
   const v = parseFloat(document.getElementById(`pAttrVal_${id}`).value);
   if (!k || isNaN(v)) { alert("请填写属性名和数值"); return; }
@@ -813,19 +834,22 @@ function addPersonAttr(id) {
   putPerson(p);
 }
 function updatePersonNeed(id, i, field, v) {
-  const p = persons.find(x => x.id === id);
+  const p = getSelected(id);
+  if (!p) return;
   if (field === "amount") p.needs[i].amount = parseFloat(v) || 0;
   else p.needs[i].key = v.trim();
   putPerson(p);
 }
 function delPersonNeed(id, i) {
-  const p = persons.find(x => x.id === id);
+  const p = getSelected(id);
+  if (!p) return;
   p.needs.splice(i, 1);
   renderDetail();
   putPerson(p);
 }
 function addPersonNeed(id) {
-  const p = persons.find(x => x.id === id);
+  const p = getSelected(id);
+  if (!p) return;
   const k = document.getElementById(`pNeedKey_${id}`).value.trim();
   const v = parseFloat(document.getElementById(`pNeedVal_${id}`).value);
   if (!k || isNaN(v)) { alert("请填写资源名和数量"); return; }
@@ -834,19 +858,22 @@ function addPersonNeed(id) {
   putPerson(p);
 }
 function updatePersonRule(id, i, field, v) {
-  const p = persons.find(x => x.id === id);
+  const p = getSelected(id);
+  if (!p) return;
   if (field === "rate") p.rules[i].rate = parseFloat(v) || 0;
   else p.rules[i][field] = v.trim();
   putPerson(p);
 }
 function delPersonRule(id, i) {
-  const p = persons.find(x => x.id === id);
+  const p = getSelected(id);
+  if (!p) return;
   p.rules.splice(i, 1);
   renderDetail();
   putPerson(p);
 }
 function addPersonRule(id) {
-  const p = persons.find(x => x.id === id);
+  const p = getSelected(id);
+  if (!p) return;
   const f = document.getElementById(`pFrom_${id}`).value.trim();
   const t = document.getElementById(`pTo_${id}`).value.trim();
   const r = parseFloat(document.getElementById(`pRate_${id}`).value);
@@ -857,8 +884,13 @@ function addPersonRule(id) {
 }
 
 async function putPerson(p) {
-  try { await api("PUT", `/person/${p.id}`, p); }
-  catch (e) { console.error("推送个体失败：", e.message); }
+  try {
+    const r = await api("PUT", `/person/${p.id}`, p);
+    // 用服务端返回的规范数据回写，避免本地缓存与后端漂移
+    if (r && r.person && selectedPerson && selectedPerson.id === p.id) {
+      selectedPerson = normalizePerson(r.person);
+    }
+  } catch (e) { console.error("推送个体失败：", e.message); }
 }
 
 // ===================== 个体增删 =====================
@@ -866,28 +898,29 @@ async function addPerson() {
   const name = document.getElementById("newPersonName").value.trim() || null;
   try {
     const path = name ? `/person?name=${encodeURIComponent(name)}` : "/person";
-    const r = await api("POST", path);
-    persons.push(normalizePerson(r.person));
+    await api("POST", path);
     document.getElementById("newPersonName").value = "";
-    renderPersonList();
+    await loadState();   // 刷新 summary（分组/总数）与当前页
   } catch (e) { alert("创建失败：" + e.message); }
 }
 
 async function delPerson(id) {
   try {
     await api("DELETE", `/person/${id}`);
-    persons = persons.filter(p => p.id !== id);
     if (selectedId === id) {
       selectedId = null;
-      document.getElementById("detailPanel").style.display = "none";
+      selectedPerson = null;
+      selectedParentName = null;
+      const dp = document.getElementById("detailPanel");
+      if (dp) dp.style.display = "none";
     }
-    renderPersonList();
+    await loadState();
   } catch (e) { alert("删除失败：" + e.message); }
 }
 
 // ===================== 配置导入/导出 =====================
 function exportConfig() {
-  if (persons.length === 0) { alert("当前没有个体，无内容可导出"); return; }
+  if ((lastSummary.total || 0) === 0) { alert("当前没有个体，无内容可导出"); return; }
   window.location.href = "/export-persons";
 }
 
@@ -936,10 +969,13 @@ async function importFromConfigFolder() {
   try {
     const r = await api("POST", "/load-config-folder");
     defaultSettings = normalizeDefaults(r.defaults);
-    persons = r.persons.map(normalizePerson);
+    persons = [];
+    personsTotal = (r.summary && r.summary.total) || 0;
     round = r.summary.round;
     lastSummary = r.summary;
     selectedId = null;
+    selectedPerson = null;
+    selectedParentName = null;
     const detailPanel = document.getElementById("detailPanel");
     if (detailPanel) detailPanel.style.display = "none";
     renderGovernment(r.government);
@@ -956,7 +992,7 @@ async function importFromConfigFolder() {
 function renderAll() {
   renderDefaults();
   renderPersonList();
-  if (selectedId !== null) renderDetail();
+  if (selectedId !== null) refreshSelected();
 }
 
 // 启动时自动加载后端状态

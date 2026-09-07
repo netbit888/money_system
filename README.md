@@ -268,9 +268,11 @@ flowchart TD
 |------|------|------|
 | GET | `/` | 前端页面（index.html） |
 | GET | `/economy` | 管理页（economy.html） |
-| GET | `/state` | 完整状态：回合数、默认设置、所有个体、摘要 |
+| GET | `/state` | 状态：回合数、默认设置、摘要、政府（**不含个体列表**） |
 | GET | `/defaults` | 当前基础设置 |
 | PUT | `/defaults` | 更新基础设置（JSON Body） |
+| GET | `/persons?q=&type=&offset=&limit=` | 个体列表：**服务端**搜索 / 类型筛选 / 分页，只回传当前页（`limit` 上限 500） |
+| GET | `/person/{id}` | 查询单个个体，额外返回 `parentName`（母体名）与 `round` |
 | GET | `/history?from=&to=` | 历史曲线数据切片 |
 | POST | `/clear-history` | 清空历史 |
 | POST | `/person?name=` | 按默认模板新增个体 |
@@ -286,6 +288,9 @@ flowchart TD
 | POST | `/import-defaults` | 导入基础设置（JSON Body） |
 
 所有响应均为 `application/json; charset=utf-8`，错误返回 `{"detail": "..."}` 及对应 HTTP 状态码。
+
+> **响应瘦身**：`/next-round`、`/calculate`、`/next-and-calc`、`/reset` 只返回 `{log, summary, government}`（`/reset` 另含 `defaults`），**不回传全量个体**。
+> N=1 万时单回合响应体由约 4.6 MB 降至 0.7 KB。前端按需补拉：列表页走 `/persons` 取当前页，详情面板走 `GET /person/{id}` 取选中个体。
 
 ---
 
@@ -326,7 +331,7 @@ flowchart TD
 1. **单线程 HTTP 服务**：使用 `HTTPServer` 而非 `ThreadingHTTPServer`，避免多线程并发修改 `sim.persons` 导致状态不一致（曾出现 list index out of range）。
 2. **子代命名**：使用 `getBaseName(父名) + "#" + 子代ID`，防止多代繁殖后名称出现 `#1#2#3` 链式叠加，保持名称长度恒定。
 3. **资源预声明**：资源类型在启动时确定，运行时不动态新增，确保历史曲线与汇总逻辑稳定。
-4. **前端性能**：个体列表采用搜索 + 分页（非全量渲染），防止大 N 时 DOM 卡顿；历史曲线采用可滑动窗口，避免回合数暴涨后全量绘制。
+4. **前端性能**：个体列表的搜索 / 类型筛选 / 分页全部由服务端完成（`GET /persons`），前端只持有当前页；回合类接口不再回传全量个体（N=1 万时单响应从 ~4.6 MB 降到 <1 KB）；历史曲线采用可滑动窗口，避免回合数暴涨后全量绘制。
 5. **持久化容错**：`snapshots/history.json` 每 10 回合存盘一次，存盘失败不阻塞主流程。
 6. **交换原子性**：交换计算在 `entities` 工作副本上执行，完成后才写回 `persons.attrs`，中途异常不污染原数据；价格自适应调价在写回阶段对 `persons[i].rules[j].rate` 生效。
 
