@@ -33,14 +33,11 @@ def check(name, ok, detail=""):
 
 def build(n, seed=42, alpha=0.3):
     """确定性构造：不依赖全局 random，保证可复现。"""
-    sim = Simulation()
+    # 隔离持久化：测试不得读写真实的 snapshots/
+    sim = Simulation(history_dir=tempfile.mkdtemp(prefix="econ-test-"))
     sim.persons = []
     sim.next_id = 1
     sim.round = 0
-    # 隔离持久化：测试不得读写真实的 snapshots/history.json
-    sim._history_dir = tempfile.mkdtemp(prefix="econ-test-")
-    sim._history_path = os.path.join(sim._history_dir, "history.json")
-    sim.history = []
     sim.defaults.adaptive_pricing = True
     sim.defaults.price_adjust_alpha = alpha
     rnd = random.Random(seed)
@@ -94,7 +91,7 @@ check("不同参数产生不同轨迹", d2 != BASELINE_DIGEST)
 # ============ 2. 字段对齐 ============
 print()
 print("=== 2. 基础设置导出/导入往返不丢字段 ===")
-sim = Simulation()
+sim = Simulation(history_dir=tempfile.mkdtemp(prefix="econ-test-"))
 sim.defaults.adaptive_pricing = True
 sim.defaults.price_adjust_alpha = 0.42
 sim.defaults.weanMinRounds = 4
