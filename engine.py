@@ -853,12 +853,15 @@ class Simulation:
         if self.defaults.adaptive_pricing and self.defaults.price_adjust_alpha > 0:
             alpha = float(self.defaults.price_adjust_alpha)
             adjusted = 0
+            # id → 个体索引：一次 O(N) 建表，替代循环内 self.find(pid) 的 O(N) 线性查找
+            # （否则整段退化为 O(挂牌数 × 个体数) 的平方复杂度，N=3万 时单回合 >40s）
+            by_id = {p.id: p for p in self.persons}
             for (pid, idx), listed in rule_listed.items():
                 if listed <= 0:
                     continue
                 sold = rule_sold.get((pid, idx), 0.0)
                 fill = sold / listed
-                p = self.find(pid)
+                p = by_id.get(pid)
                 if p is None or idx >= len(p.rules):
                     continue
                 new_rate = p.rules[idx].rate * (1.0 + alpha * (2.0 * fill - 1.0))
@@ -1089,10 +1092,14 @@ def export_defaults(path: str, defaults: DefaultSettings, government: Government
             "reproThresholdMult": defaults.reproThresholdMult,
             "reproInheritMult": defaults.reproInheritMult,
             "reproInheritRatio": defaults.reproInheritRatio,
+            "weanMinRounds": defaults.weanMinRounds,
+            "weanMaxRounds": defaults.weanMaxRounds,
             "attrs": dict(defaults.attrs),
             "needs": [{"key": n.key, "amount": n.amount} for n in defaults.needs],
             "rules": [{"sell": r.sell, "buy": r.buy, "rate": r.rate} for r in defaults.rules],
             "perishable_resources": list(defaults.perishable_resources),
+            "adaptive_pricing": defaults.adaptive_pricing,
+            "price_adjust_alpha": defaults.price_adjust_alpha,
             "price_index_numeraire": defaults.price_index_numeraire,
         },
         "government": {
@@ -1123,10 +1130,14 @@ def import_defaults(path: str) -> DefaultSettings:
         reproThresholdMult=float(src.get("reproThresholdMult", 2.0)),
         reproInheritMult=float(src.get("reproInheritMult", 1.0)),
         reproInheritRatio=float(src.get("reproInheritRatio", 0.5)),
+        weanMinRounds=int(src.get("weanMinRounds", 3)),
+        weanMaxRounds=int(src.get("weanMaxRounds", 8)),
         attrs={k: float(v) for k, v in (src.get("attrs") or {}).items()},
         needs=[Need(n["key"], float(n["amount"])) for n in (src.get("needs") or [])],
         rules=[norm_ask(r) for r in (src.get("rules") or [])],
         perishable_resources=[str(r) for r in (src.get("perishable_resources") or [])],
+        adaptive_pricing=bool(src.get("adaptive_pricing", False)),
+        price_adjust_alpha=float(src.get("price_adjust_alpha", 0.1)),
         price_index_numeraire=str(src.get("price_index_numeraire", "钱")),
     )
 
