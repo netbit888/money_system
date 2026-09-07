@@ -7,9 +7,15 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
+# Windows 控制台默认 GBK(936) 代码页，而 PyPy/UTF-8 模式下 print 中文走 UTF-8 字节，
+# 两者不匹配会导致启动提示乱码。这里显式锁死 stdout 为 UTF-8（配合启动脚本 chcp 65001）。
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 from engine import (
     Simulation, DefaultSettings, Person, Metabolism, Need, Rule, Government,

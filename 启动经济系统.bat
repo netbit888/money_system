@@ -52,7 +52,7 @@ if %PORT_IN_USE%==1 (
 REM ===== 3. Start backend API server in a new visible window =====
 echo.
 echo [3/4] Starting backend on port 8000...
-start "MoneySystem API" cmd /k "cd /d d:\PythonProject\money_system && %RUN_CMD% app.py"
+start "MoneySystem API" cmd /k "chcp 65001 >nul && cd /d d:\PythonProject\money_system && %RUN_CMD% app.py"
 
 REM ===== 4. Wait and open browser =====
 echo.
