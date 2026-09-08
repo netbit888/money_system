@@ -58,7 +58,13 @@
 ```
 money_system/
 ├── app.py                      # HTTP 服务（路由 + 静态文件 + 序列化）
-├── engine.py                   # 仿真引擎（回合逻辑 + 交换算法 + 持久化）
+├── engine/                     # 仿真引擎包（对外 API 与原 engine.py 一致）
+│   ├── __init__.py             # 门面：全量 re-export，保持 from engine import ... 不变
+│   ├── model.py                # A 数据结构 + 规范化 + 格式化/统计工具（零依赖）
+│   ├── history.py              # B 历史分层降采样持久化（HistoryStore）
+│   ├── metrics.py              # C 回合经济指标计算（纯函数 compute_metrics）
+│   ├── config_io.py            # F 个体/设置 JSON 序列化与导入导出
+│   └── core.py                 # Simulation（D 交换撮合 + E 回合流程）
 ├── index.html                  # 前端：运行页（回合控制/日志/饼图/历史曲线）
 ├── economy.html                # 前端：管理页（基础设置/个体管理/导入导出）
 ├── common.js                   # 前后端共享的前端逻辑
@@ -72,6 +78,27 @@ money_system/
 ├── 启动经济系统.bat             # Windows 一键启动脚本
 └── .gitignore
 ```
+
+### 引擎拆分（engine/ 包）
+
+引擎按职责边界拆为五层，对外 `from engine import ...` 与原 `engine.py` 完全兼容：
+
+| 层 | 文件 | 职责 | 依赖 |
+|---|---|---|---|
+| A | `model.py` | 数据结构（`Person`/`Rule`/`Need`/`Government`/`DefaultSettings`）+ 规范化 + 格式化/统计工具 | 仅标准库 |
+| B | `history.py` | 历史曲线分层降采样持久化（`HistoryStore`：加载/追加写/归档/压缩/切片） | 仅标准库 |
+| C | `metrics.py` | 回合经济指标计算（纯函数 `compute_metrics`） | A |
+| F | `config_io.py` | 个体/基础设置的 JSON 序列化与导入导出 | A |
+| 核心 | `core.py` | `Simulation`（D 交换撮合 + E 回合流程），持久化委托 B、指标委托 C | A/B/C/F |
+
+要点：
+
+- `core.Simulation` 持有 `HistoryStore` 实例，通过 `history` / `get_history` / `clear_history` /
+  `persist_errors` / `_maybe_persist` 等属性与方法委托，保留了测试/基准直连的接口（如
+  `sim._persist_every`、`sim._levels`、`sim._compact_l0()`）。
+- D（撮合）与 E（回合流程）仍合在 `core.py`：二者共享 `res_delta` 账本、成交聚合暂存与
+  verbose 日志渲染，强行拆分收益低、风险高；且 `calculate()` 的热循环为性能敏感代码。
+- `python -m engine` 等价于旧版 `python engine.py` 的冒烟测试。
 
 ---
 

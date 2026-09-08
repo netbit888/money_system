@@ -1,245 +1,35 @@
-"""经济模拟引擎（从 economy.html 迁移）。
+"""核心层：Simulation（D 交换撮合 + E 回合流程）。
 
-纯逻辑层，无 UI。算法与 HTML 版本保持一致，输出日志文本相同。
+职责：
+  - E：一回合的时序闭环（清易腐 → 收入 → 交换 → 代谢 → 死亡 → 繁殖 → 断乳 → 抚养）
+  - D：生产者挂牌定价的多轮迭代出清撮合（双指针 + 税收 + 自适应调价）
+
+依赖：
+  - A model        （数据结构 + 格式化/规范化工具）
+  - B history      （历史持久化，经 HistoryStore 委托）
+  - C metrics      （指标计算纯函数）
+  - F config_io    （config 目录读写）
+
+⚠️ 热路径：calculate() 的双指针内层循环是反复优化过的（SoA 平行数组 + 局部变量），
+不要为了"好看"把它拆成小函数——函数调用开销会直接打在每笔成交上。
 """
 from __future__ import annotations
 
-import json
-import math
 import os
 import time
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
 
-
-# ===================== 数据结构 =====================
-@dataclass(slots=True)
-class Rule:
-    """挂牌规则：1 单位 sell 兑换 rate 单位 buy。"""
-    sell: str
-    buy: str
-    rate: float
-
-
-@dataclass(slots=True)
-class Metabolism:
-    """代谢/收入：每回合扣减/增加 amount 单位 res 资源。"""
-    res: str
-    amount: float
-
-
-@dataclass(slots=True)
-class Need:
-    key: str
-    amount: float
-
-
-@dataclass(slots=True)
-class Person:
-    id: int
-    parentId: int | None           # 永久依赖母体（繁殖时记录）
-    name: str
-    metabolism: Metabolism
-    income: Metabolism
-    canReproduce: bool = True
-    reproThresholdMult: float = 2.0   # 繁殖阈值倍数（个体级，可独立调整）
-    reproInheritMult: float = 1.0     # 子代继承倍数（个体级，可独立调整）
-    # 子代继承非代谢资源的比例：从母体转移（母减子增），不是复制。
-    # 0=白手起家，1=母体非代谢资源全部给子代。这是保证资源守恒的关键字段。
-    reproInheritRatio: float = 0.5
-    attrs: dict[str, float] = field(default_factory=dict)
-    needs: list[Need] = field(default_factory=list)
-    rules: list[Rule] = field(default_factory=list)
-    # —— 抚养与断乳 ——
-    birthRound: int | None = None   # 出生回合（原始个体为 None）
-    dependent: bool = True          # 是否仍依赖母体接受抚养；断乳后置 False
-    # 个体级养育期覆盖（None = 继承 DefaultSettings）；繁殖时传给子代
-    weanMinRounds: int | None = None
-    weanMaxRounds: int | None = None
-
-
-@dataclass
-class DefaultSettings:
-    """抽象模板：新建个体时的初始值。"""
-    metabolism: Metabolism
-    income: Metabolism
-    canReproduce: bool = True
-    reproThresholdMult: float = 2.0   # 繁殖阈值倍数：代谢资源 > reproThresholdMult × 代谢值 → 繁殖
-    reproInheritMult: float = 1.0     # 子代继承倍数：继承 min(reproInheritMult × 代谢值, 母体付出)
-    reproInheritRatio: float = 0.5    # 子代继承非代谢资源的比例（从母体转移，保证守恒）
-    weanMinRounds: int = 3            # 最小养育期：出生后至少 N 回合才允许断乳
-    weanMaxRounds: int = 8            # 最大养育期：到点强制断乳（富裕度不达标也独立）
-    attrs: dict[str, float] = field(default_factory=dict)
-    needs: list[Need] = field(default_factory=list)
-    rules: list[Rule] = field(default_factory=list)
-    perishable_resources: list[str] = field(default_factory=list)  # 易腐资源：每回合开始清零，仅当期有效
-    adaptive_pricing: bool = False        # 轻量价格发现：按成交率反馈调整每个挂牌 rate
-    price_adjust_alpha: float = 0.1       # 调价强度 α：0~1，越大价格波动越剧烈
-    price_index_numeraire: str = "钱"     # 价格指数记账单位（单一计价货币，默认 钱）
-    max_population: int = 300000          # 个体总数上限：0 = 不限制（防止人口膨胀/内存失控）
-
-
-@dataclass
-class Government:
-    """政府：非交易主体，从每笔成交的支付中强制抽取税收。
-
-    不进 persons 列表，不参与代谢/死亡/繁殖，summary() 不计入总人口。
-    """
-    tax_rate: float = 0.1                        # 税率：从支付额中抽取的比例
-    treasury: dict[str, float] = field(default_factory=dict)   # 国库当前持有
-    total_collected: dict[str, float] = field(default_factory=dict)  # 累计征收
-
-    def collect(self, res: str, amount: float) -> None:
-        """征收 amount 单位 res 资源（同时计入累计）。"""
-        if amount <= 0:
-            return
-        self.treasury[res] = self.treasury.get(res, 0.0) + amount
-        self.total_collected[res] = self.total_collected.get(res, 0.0) + amount
-
-    def reset(self) -> None:
-        """回合重置时清空国库与累计（税率保留）。"""
-        self.treasury.clear()
-        self.total_collected.clear()
-
-
-# ===================== 规范化函数 =====================
-def norm_ask(r) -> Rule:
-    """规范化挂牌规则。兼容 Rule 对象、sell/buy、res1/res2、from/to 三种历史 dict 格式。"""
-    # 已是规范 dataclass 直接克隆返回（保持不可变语义）
-    if isinstance(r, Rule):
-        return Rule(r.sell, r.buy, r.rate)
-    sell, buy, rate = "", "", 0.0
-    if isinstance(r, dict):
-        if r.get("sell") is not None and r.get("buy") is not None:
-            sell, buy, rate = r["sell"], r["buy"], r.get("rate", 0)
-        elif r.get("res1") is not None and r.get("res2") is not None:
-            sell, buy, rate = r["res1"], r["res2"], r.get("rate", 0)
-        elif r.get("from") is not None and r.get("to") is not None:
-            sell, buy, rate = r["from"], r["to"], r.get("rate", 0)
-    return Rule(
-        sell=str(sell or "").strip(),
-        buy=str(buy or "").strip(),
-        rate=float(rate) if rate else 0.0,
-    )
-
-
-def norm_metabolism(m, fallback_res: str = "食物") -> Metabolism:
-    """规范化代谢/收入对象。负 amount 归 0；缺失时 fallback 到 fbRes+1。"""
-    fb = fallback_res if isinstance(fallback_res, str) and fallback_res.strip() else "食物"
-    if isinstance(m, dict):
-        res = str(m.get("res") or "").strip() or fb
-        amount = max(0.0, float(m.get("amount") or 0))
-        return Metabolism(res, amount)
-    if isinstance(m, str) and m.strip():
-        return Metabolism(m.strip(), 1.0)
-    return Metabolism(fb, 1.0)
-
-
-def fmt_num(v) -> str:
-    """整数无小数，非整数 2 位。"""
-    try:
-        n = float(v)
-    except (TypeError, ValueError):
-        return "0"
-    if not math.isfinite(n):
-        return "0"
-    if n.is_integer():
-        return str(int(n))
-    return f"{n:.2f}"
-
-
-def get_base_name(name: str) -> str:
-    """截 # 前的基础名（饼图分组用）。"""
-    idx = name.find("#")
-    return name[:idx] if idx > 0 else name
-
-
-def gini(values: list[float]) -> float:
-    """基尼系数：财富（或任意非负量）分布的集中度，0=完全平等，1=完全集中。
-
-    采用升序公式 G = (2·Σ i·xᵢ)/(n·Σx) − (n+1)/n（i 从 1 起）。
-    空列表或总和为 0 时返回 0.0 以避免除零。
-    """
-    n = len(values)
-    if n == 0:
-        return 0.0
-    s = sorted(values)
-    total = sum(s)
-    if total <= 0:
-        return 0.0
-    cum = 0.0
-    for i, x in enumerate(s, start=1):
-        cum += i * x
-    return (2.0 * cum) / (n * total) - (n + 1.0) / n
-
-
-# gini 采样上限：财富列表超过该规模时均匀采样，近似计算，避免 O(N log N)（3.5）
-_GINI_SAMPLE_SIZE = 10000
+from .config_io import import_defaults, import_persons, load_gov_tax_rate
+from .history import HistoryStore
+from .metrics import compute_metrics
+from .model import (
+    DefaultSettings, Government, Metabolism, Need, Person, Rule,
+    fmt_num, get_base_name, norm_ask, norm_metabolism,
+)
 
 # 市场出清：多轮迭代上限 + 最小成交量。
 # 后者用于避免浮点残渣（1e-18 级别的成交）让迭代永远无法收敛。
 _MAX_CLEARING_ROUNDS = 8
 _TRADE_EPS = 1e-9
-
-
-# ===================== 历史分层降采样 =====================
-# 长时间运行时历史会无限增长，写入是「每 10 回合全量重写」→ O(R²)。
-# 这里改为：L0 保留近 1000 回合原始行，更老的按 10:1 逐层折叠归档。
-# 内存与磁盘占用都变成 O(log R)，单次写盘成本与已跑回合数无关。
-_L0_CAPACITY = 1000          # L0 保留的原始行数
-_LEVEL_CAPACITY = 1000       # 各归档层保留的行数
-_FOLD = 10                   # 折叠倍率：10 行 → 1 行
-_ARCHIVE_WRITE_EVERY = 100   # 累计多少次折叠后落盘归档（其间只追加 L0）
-
-# 聚合规则必须按字段语义分派，不能一律取平均
-_SUM_METRICS = ("volume", "born", "dead")          # 计数类 → 求和
-_MEAN_METRICS = (                                   # 比率/价格类 → 均值
-    "price_index", "gini", "hhi_wealth", "hhi_pop", "unemployment", "met_rate",
-)
-
-
-def _mean_or_none(vals: list) -> float | None:
-    vals = [float(v) for v in vals if v is not None]
-    return (sum(vals) / len(vals)) if vals else None
-
-
-def aggregate_rows(rows: list[dict]) -> dict:
-    """把连续若干行折叠成一行。
-
-    ⚠️ 计数类（volume/born/dead）必须求和、比率类取均值、存量类取均值。
-    若一律取平均，计数类会随折叠倍率缩水，且是静默错误（不报错、只失真）。
-    """
-    if not rows:
-        raise ValueError("aggregate_rows: 行组为空")
-    n = len(rows)
-    groups_acc: dict[str, float] = {}
-    res_acc: dict[str, float] = {}
-    sum_acc: dict[str, float] = {k: 0.0 for k in _SUM_METRICS}
-    mean_buf: dict[str, list] = {k: [] for k in _MEAN_METRICS}
-
-    for r in rows:
-        for k, v in (r.get("groups") or {}).items():
-            groups_acc[k] = groups_acc.get(k, 0.0) + float(v)
-        for k, v in (r.get("resource_totals") or {}).items():
-            res_acc[k] = res_acc.get(k, 0.0) + float(v)
-        met = r.get("metrics") or {}
-        for k in _SUM_METRICS:
-            sum_acc[k] += float(met.get(k) or 0.0)
-        for k in _MEAN_METRICS:
-            mean_buf[k].append(met.get(k))
-
-    metrics: dict = {k: sum_acc[k] for k in _SUM_METRICS}
-    for k in _MEAN_METRICS:
-        metrics[k] = _mean_or_none(mean_buf[k])
-
-    return {
-        "round": rows[0]["round"],           # 区间起点
-        "span": sum(int(r.get("span") or 1) for r in rows),
-        "total": _mean_or_none([r.get("total") for r in rows]),
-        "groups": {k: v / n for k, v in groups_acc.items()},
-        "resource_totals": {k: v / n for k, v in res_acc.items()},
-        "metrics": metrics,
-    }
 
 
 # ===================== 引擎 =====================
@@ -260,137 +50,67 @@ class Simulation:
         self._last_res_delta: dict[str, float] = {}  # 本回合资源总量变化（delta 账本）
         self._last_n_dead: int = 0
         self._last_n_born: int = 0
+        self._last_metrics: dict | None = None  # 最近一次完整回合的指标（供前端 KPI 卡片）
         self.last_elapsed_ms: float = 0.0   # 最近一回合/一次交换的耗时（ms），供前端展示
-        # 持久化：分层历史。history_dir 可注入 —— 测试/基准必须传临时目录，
+        # 持久化：委托 B 层 HistoryStore。history_dir 可注入 —— 测试/基准必须传临时目录，
         # 否则会写进真实的 snapshots/（曾发生过基准脚本覆盖真实历史的事故）
-        self._history_dir = history_dir
-        self._l0_path = os.path.join(history_dir, "history-l0.jsonl")
-        self._archive_path = os.path.join(history_dir, "history-archive.json")
-        self._legacy_path = os.path.join(history_dir, "history.json")
-        self._levels: list[list[dict]] = [[]]   # [0]=L0 原始行，[1..]=逐层 10:1 归档
-        self._archive_max_round = -1            # 归档层已覆盖到的最大回合
-        self._l0_last_written_round = -1        # 已追加到 jsonl 的 L0 最大回合
-        self._folds_since_archive_write = 0
-        self._pending_migration = False
-        self.persist_errors = 0                 # 读写失败计数（不再静默吞掉）
-        self._persist_every = 10                # 每 10 回合追加一次 L0
-        self._load_history()
+        self._history = HistoryStore(history_dir)
 
-    # ===================== 持久化：分层降采样 + 追加写 =====================
+    # ===================== 持久化委托（B 层）=====================
+    # 历史存储已独立到 history.HistoryStore，这里保留原有的 Simulation 接口，
+    # 供 app.py 与既有测试/基准继续使用（含测试直接读写的内部字段）。
+    @property
+    def _history_dir(self) -> str:
+        return self._history.history_dir
+
+    @property
+    def _levels(self) -> list[list[dict]]:
+        return self._history.levels
+
     @property
     def history(self) -> list[dict]:
         """按回合升序的完整历史视图：归档层在前（更老、更粗），L0 在后。"""
-        out: list[dict] = []
-        for lvl in reversed(self._levels):
-            out.extend(lvl)
-        return out
+        return self._history.history
 
-    def _load_history(self) -> None:
-        """启动时加载：归档层 + L0 日志（跳过已被归档覆盖的行）。"""
-        self._levels = [[]]
-        self._archive_max_round = -1
+    @property
+    def persist_errors(self) -> int:
+        """读写失败计数（B 层累计，不再静默吞掉）。"""
+        return self._history.persist_errors
 
-        # 1) 归档层（levels[1:]）
-        if os.path.exists(self._archive_path):
-            try:
-                with open(self._archive_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                self._levels.extend(data.get("levels") or [])
-                self._archive_max_round = int(data.get("max_round", -1))
-            except Exception as e:
-                self.persist_errors += 1
-                print(f"[警告] 归档历史读取失败，已忽略：{e}")
+    @property
+    def _persist_every(self) -> int:
+        return self._history._persist_every
 
-        # 2) L0：jsonl 中 round > 归档覆盖范围的行
-        rows: list[dict] = []
-        if os.path.exists(self._l0_path):
-            try:
-                with open(self._l0_path, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        r = json.loads(line)
-                        if int(r.get("round", -1)) > self._archive_max_round:
-                            rows.append(r)
-            except Exception as e:
-                self.persist_errors += 1
-                print(f"[警告] 历史日志读取失败，已忽略：{e}")
+    @_persist_every.setter
+    def _persist_every(self, value: int) -> None:
+        self._history._persist_every = value
 
-        # 3) 旧版单文件 history.json 的一次性迁移
-        if not rows and len(self._levels) == 1 and os.path.exists(self._legacy_path):
-            try:
-                with open(self._legacy_path, "r", encoding="utf-8") as f:
-                    rows = json.load(f) or []
-                self._pending_migration = True
-            except Exception as e:
-                self.persist_errors += 1
-                print(f"[警告] 旧版历史迁移失败：{e}")
+    @property
+    def _folds_since_archive_write(self) -> int:
+        return self._history._folds_since_archive_write
 
-        self._levels[0] = rows
-        self._l0_last_written_round = max(
-            [int(r["round"]) for r in rows if r.get("round") is not None]
-            or [self._archive_max_round]
-        )
-
-    # --- 原子写：先写临时文件再 os.replace，避免写一半崩溃留下损坏文件 ---
-    @staticmethod
-    def _atomic_write(path: str, write_fn) -> None:
-        tmp = path + ".tmp"
-        write_fn(tmp)
-        os.replace(tmp, path)
+    @_folds_since_archive_write.setter
+    def _folds_since_archive_write(self, value: int) -> None:
+        self._history._folds_since_archive_write = value
 
     def _write_archive(self) -> None:
-        data = {"max_round": self._archive_max_round, "levels": self._levels[1:]}
-
-        def _w(tmp):
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False)
-                f.flush()
-
-        self._atomic_write(self._archive_path, _w)
+        self._history.write_archive()
 
     def _compact_l0(self) -> None:
-        """丢弃已被归档覆盖的 L0 行。
+        self._history.compact_l0()
 
-        只能在归档落盘之后调用：判断依据是 round > _archive_max_round，
-        而该值已随归档持久化，因此崩溃后重新加载也不会丢行。
-        """
-        keep = [r for r in self._levels[0]
-                if int(r.get("round", -1)) > self._archive_max_round]
+    def _maybe_persist(self) -> None:
+        self._history.maybe_persist(self.round)
 
-        def _w(tmp):
-            with open(tmp, "w", encoding="utf-8") as f:
-                for r in keep:
-                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
-                f.flush()
+    def get_history(self, start: int = 0, end: int | None = None) -> list[dict]:
+        """返回历史曲线数据切片（跨归档层与 L0，按回合升序）。"""
+        return self._history.get_history(start, end)
 
-        self._atomic_write(self._l0_path, _w)
+    def clear_history(self) -> None:
+        """清空历史（reset_round 时调用）。"""
+        self._history.clear()
 
-    def _compress_levels(self) -> None:
-        """各层超容时把最老的 _FOLD 行折叠进下一层（可连锁）。"""
-        k = 0
-        while k < len(self._levels):
-            cap = _L0_CAPACITY if k == 0 else _LEVEL_CAPACITY
-            lvl = self._levels[k]
-            if len(lvl) <= cap:
-                k += 1
-                continue
-            # 不能折叠尚未落盘的 L0 行，否则崩溃后会丢失
-            if k == 0 and int(lvl[0].get("round", -1)) > self._l0_last_written_round:
-                break
-            group = lvl[:_FOLD]
-            del lvl[:_FOLD]
-            if k + 1 == len(self._levels):
-                self._levels.append([])
-            self._levels[k + 1].append(aggregate_rows(group))
-            if k == 0:
-                # 只有折叠 L0 才会推进归档覆盖范围（折叠更高层涉及的是更老的回合）
-                self._archive_max_round = max(self._archive_max_round,
-                                               int(group[-1]["round"]))
-            self._folds_since_archive_write += 1
-            k += 1
-
+    # ===================== 历史行记录（本层负责采样式，B 层负责存）=====================
     def _record_history(self) -> None:
         """记录当前回合到历史曲线。每回合调用一次。"""
         groups: dict[str, int] = {}
@@ -411,8 +131,19 @@ class Simulation:
                 if r.sell == "劳动力":
                     labor_posted.append(p)
                     break
-        metrics = self._compute_metrics(groups, group_wealth, wealth_list, labor_posted)
-        self._levels[0].append({
+        metrics = compute_metrics(
+            trade_agg=self._last_trade_agg,
+            met_rate=self._last_met_rate,
+            groups=groups,
+            group_wealth=group_wealth,
+            wealth_list=wealth_list,
+            labor_posted=labor_posted,
+            numeraire=self.defaults.price_index_numeraire,
+            born=self._last_n_born,
+            dead=self._last_n_dead,
+        )
+        self._last_metrics = metrics
+        self._history.append({
             "round": self.round,
             "span": 1,
             "total": len(self.persons),
@@ -420,126 +151,6 @@ class Simulation:
             "resource_totals": resource_totals,
             "metrics": metrics,
         })
-        self._compress_levels()
-
-    def _compute_metrics(
-        self,
-        groups: dict[str, int],
-        group_wealth: dict[str, float],
-        wealth_list: list[float],
-        labor_posted: list[Person],
-    ) -> dict:
-        """根据本回合末状态 + 暂存的成交聚合，计算经济指标。
-
-        所有指标均可为空（None）：无成交/无人挂劳动力时对应指标置 None，
-        前端用 (h.metrics || {}) 兜底，老历史数据缺字段也不崩。
-        """
-        m: dict = {}
-
-        # 1. 价格指数（成交加权，单一记账单位）：平均"每单位商品值多少 钱"
-        num = self.defaults.price_index_numeraire
-        num_pay = 0.0
-        num_qty = 0.0
-        for res, ta in self._last_trade_agg.items():
-            p = ta["pay"].get(num, 0.0)
-            if ta["qty"] > 0 and p > 0:
-                num_pay += p
-                num_qty += ta["qty"]
-        m["price_index"] = (num_pay / num_qty) if num_qty > 0 else None
-
-        # 2. 成交总量（所有资源成交量之和）
-        m["volume"] = sum(ta["qty"] for ta in self._last_trade_agg.values())
-
-        # 3. 需求满足率（生态健康信号）
-        m["met_rate"] = self._last_met_rate
-
-        # 4. 基尼系数（财富净值分布）：大 N 均匀采样近似，避免 O(N log N)（3.5）
-        wl = wealth_list
-        if len(wl) > _GINI_SAMPLE_SIZE:
-            step = (len(wl) + _GINI_SAMPLE_SIZE - 1) // _GINI_SAMPLE_SIZE
-            wl = wl[::step]
-        m["gini"] = gini(wl)
-
-        # 5. 产业集中度 HHI（财富口径 + 人口口径）：Σ share²，1/n ~ 1
-        total_w = sum(group_wealth.values())
-        m["hhi_wealth"] = (
-            sum((w / total_w) ** 2 for w in group_wealth.values()) if total_w > 0 else 0.0
-        )
-        total_p = sum(groups.values())
-        m["hhi_pop"] = (
-            sum((c / total_p) ** 2 for c in groups.values()) if total_p > 0 else 0.0
-        )
-
-        # 6. 失业率（劳动力口径）：挂出劳动力却 0 成交者占比（labor_posted 由 _record_history 同趟收集）
-        n_posted = len(labor_posted)
-        if n_posted > 0:
-            sold_ids = self._last_trade_agg.get("劳动力", {}).get("sellers", set())
-            employed = sum(1 for p in labor_posted if p.id in sold_ids)
-            m["unemployment"] = (n_posted - employed) / n_posted
-        else:
-            m["unemployment"] = None
-
-        # 7. 出生 / 死亡（回合事件计数）
-        m["born"] = self._last_n_born
-        m["dead"] = self._last_n_dead
-        return m
-
-    def _maybe_persist(self) -> None:
-        """每 N 回合持久化一次：L0 追加写（O(新增)），归档低频整体写。"""
-        if self.round % self._persist_every != 0:
-            return
-        try:
-            os.makedirs(self._history_dir, exist_ok=True)
-
-            # 1) L0 只追加新增行
-            pending = [r for r in self._levels[0]
-                       if int(r.get("round", -1)) > self._l0_last_written_round]
-            if pending:
-                # 只 flush 不 fsync：每 10 回合一次强制刷盘会让持久化占掉半数运行时间
-                # （实测 5000 回合中 1.7s/3.1s）。崩溃时仅丢最后一批，进程崩溃由 OS 保证。
-                with open(self._l0_path, "a", encoding="utf-8") as f:
-                    for r in pending:
-                        f.write(json.dumps(r, ensure_ascii=False) + "\n")
-                    f.flush()
-                self._l0_last_written_round = int(pending[-1]["round"])
-
-            # 2) 归档层落盘 + 压缩 L0（低频：每累计 _ARCHIVE_WRITE_EVERY 次折叠）
-            if self._folds_since_archive_write >= _ARCHIVE_WRITE_EVERY:
-                self._write_archive()
-                self._compact_l0()
-                self._folds_since_archive_write = 0
-
-            # 3) 旧版文件迁移收尾（数据已安全写入新格式后才改名）
-            if self._pending_migration:
-                try:
-                    os.replace(self._legacy_path, self._legacy_path + ".migrated")
-                except Exception:
-                    pass
-                self._pending_migration = False
-        except Exception as e:
-            self.persist_errors += 1
-            print(f"[警告] 历史存盘失败：{e}")
-
-    def get_history(self, start: int = 0, end: int | None = None) -> list[dict]:
-        """返回历史曲线数据切片（跨归档层与 L0，按回合升序）。"""
-        hist = self.history
-        if end is None:
-            return [h for h in hist if h["round"] >= start]
-        return [h for h in hist if start <= h["round"] <= end]
-
-    def clear_history(self) -> None:
-        """清空历史（reset_round 时调用）。"""
-        self._levels = [[]]
-        self._archive_max_round = -1
-        self._l0_last_written_round = -1
-        self._folds_since_archive_write = 0
-        for p in (self._l0_path, self._archive_path):
-            try:
-                if os.path.exists(p):
-                    os.remove(p)
-            except Exception as e:
-                self.persist_errors += 1
-                print(f"[警告] 历史文件清理失败：{e}")
 
     # —— 引擎辅助 ——
     def _norm_person_metabolism(self, p: Person) -> Metabolism:
@@ -1265,6 +876,10 @@ class Simulation:
                 p.birthRound = self.round
 
     # ===================== 状态查询（前端友好的精简摘要）=====================
+    def latest_metrics(self) -> dict | None:
+        """最近一次完整回合计算出的经济指标（供前端 KPI 卡片），尚无回合时为 None。"""
+        return self._last_metrics
+
     def summary(self) -> dict:
         """前端用：人数 + 按基础名分组的计数（饼图直接用）。"""
         groups: dict[str, int] = {}
@@ -1296,149 +911,3 @@ class Simulation:
                 arrow = "↑" if diff > 0 else "↓"
                 parts.append(f"{k}={fmt_num(av)} {arrow}{fmt_num(abs(diff))}")
         return "，".join(parts)
-
-
-# ===================== IO =====================
-def _person_to_dict(p: Person) -> dict:
-    return {
-        "id": p.id,
-        "parentId": p.parentId,
-        "name": p.name,
-        "metabolism": {"res": p.metabolism.res, "amount": p.metabolism.amount},
-        "income": {"res": p.income.res, "amount": p.income.amount},
-        "canReproduce": p.canReproduce,
-        "reproThresholdMult": p.reproThresholdMult,
-        "reproInheritMult": p.reproInheritMult,
-        "reproInheritRatio": p.reproInheritRatio,
-        "attrs": dict(p.attrs),
-        "needs": [{"key": n.key, "amount": n.amount} for n in p.needs],
-        "rules": [{"sell": r.sell, "buy": r.buy, "rate": r.rate} for r in p.rules],
-        "birthRound": p.birthRound,
-        "dependent": p.dependent,
-        "weanMinRounds": p.weanMinRounds,
-        "weanMaxRounds": p.weanMaxRounds,
-    }
-
-
-def _person_from_dict(d: dict, defaults: DefaultSettings) -> Person:
-    return Person(
-        id=int(d.get("id", 0)),
-        parentId=d.get("parentId"),
-        name=d.get("name") or "未命名",
-        metabolism=norm_metabolism(d.get("metabolism"), defaults.metabolism.res),
-        income=norm_metabolism(d.get("income"), defaults.income.res),
-        canReproduce=d.get("canReproduce", True),
-        reproThresholdMult=float(d.get("reproThresholdMult", defaults.reproThresholdMult)),
-        reproInheritMult=float(d.get("reproInheritMult", defaults.reproInheritMult)),
-        reproInheritRatio=float(d.get("reproInheritRatio", defaults.reproInheritRatio)),
-        attrs={k: float(v) for k, v in (d.get("attrs") or {}).items()},
-        needs=[Need(n["key"], float(n["amount"])) for n in (d.get("needs") or [])],
-        rules=[norm_ask(r) for r in (d.get("rules") or [])],
-        birthRound=(int(d["birthRound"]) if d.get("birthRound") is not None else None),
-        dependent=bool(d.get("dependent", True)),
-        weanMinRounds=(int(d["weanMinRounds"]) if d.get("weanMinRounds") is not None else None),
-        weanMaxRounds=(int(d["weanMaxRounds"]) if d.get("weanMaxRounds") is not None else None),
-    )
-
-
-def export_persons(path: str, persons: list[Person]) -> None:
-    data = {
-        "type": "economy-persons",
-        "version": 1,
-        "persons": [_person_to_dict(p) for p in persons],
-        "exportedAt": datetime.now(timezone.utc).isoformat(),
-    }
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-
-def import_persons(path: str, defaults: DefaultSettings) -> list[Person]:
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    return [_person_from_dict(p, defaults) for p in data.get("persons", [])]
-
-
-def export_defaults(path: str, defaults: DefaultSettings, government: Government | None = None) -> None:
-    data = {
-        "type": "economy-defaults",
-        "version": 1,
-        "defaultSettings": {
-            "metabolism": {"res": defaults.metabolism.res, "amount": defaults.metabolism.amount},
-            "income": {"res": defaults.income.res, "amount": defaults.income.amount},
-            "canReproduce": defaults.canReproduce,
-            "reproThresholdMult": defaults.reproThresholdMult,
-            "reproInheritMult": defaults.reproInheritMult,
-            "reproInheritRatio": defaults.reproInheritRatio,
-            "weanMinRounds": defaults.weanMinRounds,
-            "weanMaxRounds": defaults.weanMaxRounds,
-            "attrs": dict(defaults.attrs),
-            "needs": [{"key": n.key, "amount": n.amount} for n in defaults.needs],
-            "rules": [{"sell": r.sell, "buy": r.buy, "rate": r.rate} for r in defaults.rules],
-            "perishable_resources": list(defaults.perishable_resources),
-            "adaptive_pricing": defaults.adaptive_pricing,
-            "price_adjust_alpha": defaults.price_adjust_alpha,
-            "price_index_numeraire": defaults.price_index_numeraire,
-            "max_population": defaults.max_population,
-        },
-        "government": {
-            "tax_rate": government.tax_rate if government is not None else 0.1,
-        },
-        "exportedAt": datetime.now(timezone.utc).isoformat(),
-    }
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-
-def load_gov_tax_rate(path: str) -> float:
-    """从 defaults 配置文件读取政府税率，缺失时返回 0.1。"""
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    gov = data.get("government") or {}
-    return float(gov.get("tax_rate", 0.1))
-
-
-def import_defaults(path: str) -> DefaultSettings:
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    src = data.get("defaultSettings") or data
-    return DefaultSettings(
-        metabolism=norm_metabolism(src.get("metabolism"), "食物"),
-        income=norm_metabolism(src.get("income"), "钱"),
-        canReproduce=src.get("canReproduce", True),
-        reproThresholdMult=float(src.get("reproThresholdMult", 2.0)),
-        reproInheritMult=float(src.get("reproInheritMult", 1.0)),
-        reproInheritRatio=float(src.get("reproInheritRatio", 0.5)),
-        weanMinRounds=int(src.get("weanMinRounds", 3)),
-        weanMaxRounds=int(src.get("weanMaxRounds", 8)),
-        attrs={k: float(v) for k, v in (src.get("attrs") or {}).items()},
-        needs=[Need(n["key"], float(n["amount"])) for n in (src.get("needs") or [])],
-        rules=[norm_ask(r) for r in (src.get("rules") or [])],
-        perishable_resources=[str(r) for r in (src.get("perishable_resources") or [])],
-        adaptive_pricing=bool(src.get("adaptive_pricing", False)),
-        price_adjust_alpha=float(src.get("price_adjust_alpha", 0.1)),
-        price_index_numeraire=str(src.get("price_index_numeraire", "钱")),
-        max_population=int(src.get("max_population", 300000)),
-    )
-
-
-# ===================== 冒烟测试 =====================
-if __name__ == "__main__":
-    sim = Simulation()
-    if os.path.exists("config/economy_defaults.json"):
-        sim.defaults = import_defaults("config/economy_defaults.json")
-    if os.path.exists("config/economy_persons.json"):
-        sim.persons = import_persons("config/economy_persons.json", sim.defaults)
-        sim.next_id = max((p.id for p in sim.persons), default=0) + 1
-    else:
-        sim.add_person("测试个体A")
-        sim.add_person("测试个体B")
-
-    print("【初始摘要】", sim.summary())
-    print()
-    print(sim.next_round())
-    print()
-    print("═" * 40)
-    print()
-    print(sim.calculate())
-    print()
-    print("【回合后摘要】", sim.summary())
