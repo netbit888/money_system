@@ -60,7 +60,7 @@
   <div class="log" id="log" style="margin-top:12px;">等待操作...（前端 fetch 调用后端 API，引擎在 Python 跑）</div>
   <div id="pieChartWrap" style="margin-top:12px; padding:8px; border-top:1px solid #ddd;">
     <b style="font-size:14px;">个体种类比例</b><span style="font-size:12px; color:#888;">（母体与子代归为同类）</span>
-    <div id="pieChart" style="margin-top:6px;"></div>
+    <div id="pieChart" style="margin-top:6px;height:220px;"></div>
   </div>
   <div id="historyChartWrap" style="display:none; margin-top:12px; padding:8px; border-top:1px solid #ddd;">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
@@ -93,7 +93,7 @@
     <div style="margin-bottom:6px;">
       <input type="range" id="histPos" min="0" max="100" value="100" style="width:100%;" oninput="onHistSlider()">
     </div>
-    <div id="historyChart" style="margin-top:6px;"></div>
+    <div id="historyChart" style="margin-top:6px;height:320px;"></div>
   </div>
   <div id="econChartWrap" style="margin-top:12px; padding:8px; border-top:1px solid #ddd;">
     <b style="font-size:14px;">经济指标</b><span style="font-size:12px; color:#888;">（看不到生态？这里看价格/贫富/集中度/就业）</span>
@@ -105,11 +105,12 @@
       <label style="font-size:12px; margin-right:8px;"><input type="checkbox" id="ecUnemployment" checked onchange="renderEconChart()"> 失业率</label>
       <label style="font-size:12px; margin-right:8px;"><input type="checkbox" id="ecMetRate" checked onchange="renderEconChart()"> 满足率</label>
     </div>
-    <div id="econChart" style="margin-top:6px;"></div>
+    <div id="econChart" style="margin-top:6px;height:320px;"></div>
   </div>
 </div>
 </div>
 
+<script src="/echarts.min.js"></script>
 <script src="/common.js"></script>
 <script>
 // 首页：仅需在 loadState 后刷新扇形图（loadState 内部已调用 renderPieChart）

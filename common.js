@@ -238,141 +238,93 @@ async function fetchHistoryAndRender() {
   }
 }
 
+// ===================== ECharts 实例管理 =====================
+function _echart(elId) {
+  const el = document.getElementById(elId);
+  if (!el || typeof echarts === "undefined") return null;
+  let c = echarts.getInstanceByDom(el);
+  if (!c) c = echarts.init(el);
+  c.resize();
+  return c;
+}
+
+function _echartDispose(elId) {
+  if (typeof echarts === "undefined") return;
+  const el = document.getElementById(elId);
+  if (!el) return;
+  const c = echarts.getInstanceByDom(el);
+  if (c) c.dispose();
+}
+
 function renderHistoryChart() {
   const box = document.getElementById("historyChart");
   if (!box) return;
+  if (typeof echarts === "undefined") { box.innerHTML = "<i>图表库未加载</i>"; return; }
   if (!historyData.length) {
+    _echartDispose("historyChart");
     box.innerHTML = "<i>无历史数据，先跑几个回合</i>";
     return;
   }
 
-  const showTotalEl = document.getElementById("histShowTotal");
-  const showGroupsEl = document.getElementById("histShowGroups");
-  const showResourcesEl = document.getElementById("histShowResources");
-  const showTotal = showTotalEl ? showTotalEl.checked : true;
-  const showGroups = showGroupsEl ? showGroupsEl.checked : false;
-  const showResources = showResourcesEl ? showResourcesEl.checked : false;
+  const showTotal = document.getElementById("histShowTotal") ? document.getElementById("histShowTotal").checked : true;
+  const showGroups = document.getElementById("histShowGroups") ? document.getElementById("histShowGroups").checked : false;
+  const showResources = document.getElementById("histShowResources") ? document.getElementById("histShowResources").checked : false;
 
-  // 收集所有曲线
+  const xData = historyData.map(h => h.round);
   const series = [];
   if (showTotal) {
-    series.push({ name: "总人口", data: historyData.map(h => h.total), color: "#2c3e50", dashed: false });
+    series.push({ name: "总人口", type: "line", smooth: true, lineStyle: { width: 2 }, data: historyData.map(h => h.total) });
   }
   if (showGroups) {
-    const groupColors = ["#3498db", "#e74c3c", "#2ecc71", "#f39c12", "#9b59b6", "#1abc9c", "#e67e22", "#34495e"];
     const groupNames = new Set();
     historyData.forEach(h => Object.keys(h.groups || {}).forEach(g => groupNames.add(g)));
-    let ci = 0;
     for (const g of groupNames) {
-      series.push({
-        name: g,
-        data: historyData.map(h => (h.groups || {})[g] || 0),
-        color: groupColors[ci % groupColors.length],
-        dashed: false,
-      });
-      ci++;
+      series.push({ name: g, type: "line", smooth: true, data: historyData.map(h => (h.groups || {})[g] || 0) });
     }
   }
   if (showResources) {
-    const resColors = ["#8e44ad", "#16a085", "#d35400", "#27ae60", "#c0392b", "#2980b9", "#f1c40f"];
     const resNames = new Set();
     historyData.forEach(h => Object.keys(h.resource_totals || {}).forEach(r => resNames.add(r)));
-    let ci = 0;
     for (const r of resNames) {
-      series.push({
-        name: r,
-        data: historyData.map(h => (h.resource_totals || {})[r] || 0),
-        color: resColors[ci % resColors.length],
-        dashed: true,
-      });
-      ci++;
+      series.push({ name: r, type: "line", yAxisIndex: 1, lineStyle: { type: "dashed" }, data: historyData.map(h => (h.resource_totals || {})[r] || 0) });
     }
   }
 
   if (!series.length) {
+    _echartDispose("historyChart");
     box.innerHTML = "<i>请至少勾选一项</i>";
     return;
   }
 
-  // 计算 Y 轴范围
-  let yMin = Infinity, yMax = -Infinity;
-  for (const s of series) {
-    for (const v of s.data) {
-      if (v < yMin) yMin = v;
-      if (v > yMax) yMax = v;
-    }
-  }
-  if (yMin === Infinity) { yMin = 0; yMax = 1; }
-  if (yMin > 0) yMin = 0;
-  if (yMax === yMin) yMax = yMin + 1;
-
-  const W = 700, H = 280, padL = 50, padR = 10, padT = 10, padB = 30;
-  const plotW = W - padL - padR, plotH = H - padT - padB;
-  const n = historyData.length;
-  const xScale = (i) => padL + (n <= 1 ? plotW / 2 : (i / (n - 1)) * plotW);
-  const yScale = (v) => padT + plotH - ((v - yMin) / (yMax - yMin)) * plotH;
-
-  // Y 轴刻度（4 格）
-  const yTicks = [];
-  for (let i = 0; i <= 4; i++) {
-    const v = yMin + (yMax - yMin) * i / 4;
-    yTicks.push({ v, y: yScale(v) });
-  }
-
-  // X 轴刻度（最多 8 个）
-  const xStep = Math.max(1, Math.floor(n / 8));
-  const xTicks = [];
-  for (let i = 0; i < n; i += xStep) {
-    xTicks.push({ i, label: historyData[i].round, x: xScale(i) });
-  }
-
-  // 构建 SVG
-  let svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="background:#fafafa; max-width:${W}px; font-family:inherit; font-size:10px;">`;
-
-  // Y 网格 + 刻度
-  for (const t of yTicks) {
-    svg += `<line x1="${padL}" y1="${t.y}" x2="${W - padR}" y2="${t.y}" stroke="#eee" stroke-width="1"/>`;
-    svg += `<text x="${padL - 4}" y="${t.y + 3}" text-anchor="end" fill="#666">${fmtNum(t.v)}</text>`;
-  }
-
-  // X 刻度
-  for (const t of xTicks) {
-    svg += `<line x1="${t.x}" y1="${padT + plotH}" x2="${t.x}" y2="${padT + plotH + 4}" stroke="#999"/>`;
-    svg += `<text x="${t.x}" y="${padT + plotH + 16}" text-anchor="middle" fill="#666">${t.label}</text>`;
-  }
-  svg += `<text x="${W / 2}" y="${H - 2}" text-anchor="middle" fill="#666">回合</text>`;
-
-  // 曲线
-  for (const s of series) {
-    let path = "";
-    s.data.forEach((v, i) => {
-      const x = xScale(i), y = yScale(v);
-      path += (i === 0 ? "M" : " L") + x + "," + y;
-    });
-    const dash = s.dashed ? ' stroke-dasharray="4,2"' : '';
-    svg += `<path d="${path}" fill="none" stroke="${s.color}" stroke-width="1.8"${dash}/>`;
-  }
-
-  // 图例
-  let lx = padL, ly = padT + 2;
-  for (const s of series) {
-    const dash = s.dashed ? ' stroke-dasharray="4,2"' : '';
-    svg += `<line x1="${lx}" y1="${ly + 4}" x2="${lx + 16}" y2="${ly + 4}" stroke="${s.color}" stroke-width="2"${dash}/>`;
-    svg += `<text x="${lx + 20}" y="${ly + 8}" fill="${s.color}">${s.name}</text>`;
-    lx += s.name.length * 8 + 50;
-    if (lx > W - 80) { lx = padL; ly += 14; }
-  }
-
-  svg += "</svg>";
-  box.innerHTML = svg;
+  _echart("historyChart").setOption({
+    color: ["#2c3e50", "#3498db", "#e74c3c", "#2ecc71", "#f39c12", "#9b59b6", "#1abc9c", "#e67e22", "#8e44ad", "#16a085", "#d35400", "#27ae60", "#c0392b", "#2980b9", "#f1c40f"],
+    tooltip: { trigger: "axis" },
+    legend: { type: "scroll", top: 0, textStyle: { fontSize: 12 } },
+    grid: { left: 60, right: 16, top: 32, bottom: 56 },
+    xAxis: { type: "category", data: xData, name: "回合" },
+    yAxis: [
+      { type: "value", name: "个体数" },
+      { type: "value", name: "资源量" },
+    ],
+    dataZoom: [
+      { type: "inside", start: 0, end: 100 },
+      { type: "slider", start: 0, end: 100, height: 16, bottom: 8 },
+    ],
+    series,
+  }, true);
 }
 
-// ===================== 经济指标图（双 Y 轴）=====================
+// ===================== 经济指标图（ECharts 双 Y 轴）=====================
 // 左轴：0~1 指标（基尼/HHI/失业率/满足率）；右轴：价格指数（首非空点=100 归一）。
 function renderEconChart() {
   const box = document.getElementById("econChart");
   if (!box) return;
-  if (!historyData.length) { box.innerHTML = ""; return; }
+  if (typeof echarts === "undefined") { box.innerHTML = "<i>图表库未加载</i>"; return; }
+  if (!historyData.length) {
+    _echartDispose("econChart");
+    box.innerHTML = "";
+    return;
+  }
 
   const opt = {
     price_index: document.getElementById("ecPriceIndex")?.checked,
@@ -383,7 +335,7 @@ function renderEconChart() {
     met_rate: document.getElementById("ecMetRate")?.checked,
   };
 
-  const n = historyData.length;
+  const xData = historyData.map(h => h.round);
 
   // 价格指数归一：首个非空点 = 100
   let base = null;
@@ -391,98 +343,49 @@ function renderEconChart() {
     const v = h.metrics ? h.metrics.price_index : null;
     if (base === null && v != null && v > 0) { base = v; break; }
   }
+
   const series = [];
   if (opt.price_index) {
-    const data = historyData.map(h => {
-      const v = h.metrics ? h.metrics.price_index : null;
-      return (v == null || base == null) ? null : v / base * 100;
-    });
-    series.push({ name: "价格指数", data, color: "#c0392b", axis: "right" });
-  }
-  function addRatio(key, name, color) {
-    if (!opt[key]) return;
     series.push({
-      name, color, axis: "left",
-      data: historyData.map(h => (h.metrics ? h.metrics[key] : null)),
+      name: "价格指数", type: "line", yAxisIndex: 1,
+      data: historyData.map(h => {
+        const v = h.metrics ? h.metrics.price_index : null;
+        return (v == null || base == null) ? null : +(v / base * 100).toFixed(2);
+      }),
     });
   }
-  addRatio("gini", "基尼系数", "#2980b9");
-  addRatio("hhi_wealth", "财富HHI", "#8e44ad");
-  addRatio("hhi_pop", "人口HHI", "#16a085");
-  addRatio("unemployment", "失业率", "#d35400");
-  addRatio("met_rate", "满足率", "#27ae60");
-
-  if (!series.length) { box.innerHTML = "<i>勾选上方指标以查看</i>"; return; }
-
-  // 取值范围
-  const leftVals = [], rightVals = [];
-  series.forEach(s => s.data.forEach(v => { if (v != null) (s.axis === "right" ? rightVals : leftVals).push(v); }));
-  const lMin = Math.min(0, ...(leftVals.length ? leftVals : [0]));
-  const lMaxRaw = leftVals.length ? Math.max(...leftVals) : 1;
-  const lMax = lMaxRaw <= lMin ? lMin + 1 : lMaxRaw;
-  const rMin = rightVals.length ? Math.min(...rightVals) : 0;
-  const rMaxRaw = rightVals.length ? Math.max(...rightVals) : 1;
-  const rMax = rMaxRaw <= rMin ? rMin + 1 : rMaxRaw;
-
-  const W = 700, H = 280, padL = 50, padR = 50, padT = 10, padB = 30;
-  const plotW = W - padL - padR, plotH = H - padT - padB;
-  const xScale = (i) => padL + (n <= 1 ? plotW / 2 : (i / (n - 1)) * plotW);
-  const yLeft = (v) => padT + plotH - ((v - lMin) / (lMax - lMin)) * plotH;
-  const yRight = (v) => padT + plotH - ((v - rMin) / (rMax - rMin)) * plotH;
-
-  let svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="background:#fafafa; max-width:${W}px; font-family:inherit; font-size:10px;">`;
-
-  // 左轴刻度（4 格）
-  for (let k = 0; k <= 4; k++) {
-    const v = lMin + (lMax - lMin) * k / 4;
-    const y = yLeft(v);
-    svg += `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="#eee"/>`;
-    svg += `<text x="${padL - 4}" y="${y + 3}" text-anchor="end" fill="#3498db">${fmtNum(v)}</text>`;
+  function addRatio(key, name) {
+    if (!opt[key]) return;
+    series.push({ name, type: "line", yAxisIndex: 0, data: historyData.map(h => (h.metrics ? h.metrics[key] : null)) });
   }
-  // 右轴刻度（价格指数）
-  for (let k = 0; k <= 4; k++) {
-    const v = rMin + (rMax - rMin) * k / 4;
-    const y = yRight(v);
-    svg += `<text x="${W - padR + 4}" y="${y + 3}" text-anchor="start" fill="#c0392b">${fmtNum(v)}</text>`;
+  addRatio("gini", "基尼系数");
+  addRatio("hhi_wealth", "财富HHI");
+  addRatio("hhi_pop", "人口HHI");
+  addRatio("unemployment", "失业率");
+  addRatio("met_rate", "满足率");
+
+  if (!series.length) {
+    _echartDispose("econChart");
+    box.innerHTML = "<i>勾选上方指标以查看</i>";
+    return;
   }
 
-  // X 刻度
-  const xStep = Math.max(1, Math.floor(n / 8));
-  for (let i = 0; i < n; i += xStep) {
-    svg += `<line x1="${xScale(i)}" y1="${padT + plotH}" x2="${xScale(i)}" y2="${padT + plotH + 4}" stroke="#999"/>`;
-    svg += `<text x="${xScale(i)}" y="${padT + plotH + 16}" text-anchor="middle" fill="#666">${historyData[i].round}</text>`;
-  }
-  svg += `<text x="${W / 2}" y="${H - 2}" text-anchor="middle" fill="#666">回合</text>`;
-  svg += `<text x="${padL - 4}" y="${padT - 1}" text-anchor="end" fill="#3498db">0~1</text>`;
-  svg += `<text x="${W - padR + 4}" y="${padT - 1}" text-anchor="start" fill="#c0392b">指数</text>`;
-
-  // 曲线
-  for (const s of series) {
-    let path = "";
-    let started = false;
-    s.data.forEach((v, i) => {
-      if (v == null) { started = false; return; }
-      const x = xScale(i), y = (s.axis === "right" ? yRight(v) : yLeft(v));
-      path += (started ? " L" : "M") + x + "," + y;
-      started = true;
-    });
-    svg += `<path d="${path}" fill="none" stroke="${s.color}" stroke-width="1.8"/>`;
-  }
-
-  // 图例（含最新实际值）
-  let lx = padL, ly = padT + 2;
-  for (const s of series) {
-    let last = null;
-    for (let i = n - 1; i >= 0; i--) { if (s.data[i] != null) { last = s.data[i]; break; } }
-    const label = s.name + (last != null ? ` ${fmtNum(last)}` : "");
-    svg += `<line x1="${lx}" y1="${ly + 4}" x2="${lx + 16}" y2="${ly + 4}" stroke="${s.color}" stroke-width="2"/>`;
-    svg += `<text x="${lx + 20}" y="${ly + 8}" fill="${s.color}">${label}</text>`;
-    lx += label.length * 8 + 24;
-    if (lx > W - 60) { lx = padL; ly += 14; }
-  }
-
-  svg += "</svg>";
-  box.innerHTML = svg;
+  _echart("econChart").setOption({
+    color: ["#c0392b", "#2980b9", "#8e44ad", "#16a085", "#d35400", "#27ae60"],
+    tooltip: { trigger: "axis" },
+    legend: { type: "scroll", top: 0, textStyle: { fontSize: 12 } },
+    grid: { left: 60, right: 60, top: 32, bottom: 56 },
+    xAxis: { type: "category", data: xData, name: "回合" },
+    yAxis: [
+      { type: "value", name: "0~1", min: 0 },
+      { type: "value", name: "指数" },
+    ],
+    dataZoom: [
+      { type: "inside", start: 0, end: 100 },
+      { type: "slider", start: 0, end: 100, height: 16, bottom: 8 },
+    ],
+    series,
+  }, true);
 }
 
 async function clearHistory() {
@@ -546,41 +449,31 @@ function renderPieChart() {
   renderPopCap();
   const box = document.getElementById("pieChart");
   if (!box) return;
+  if (typeof echarts === "undefined") { box.innerHTML = "<i>图表库未加载</i>"; return; }
   const groups = lastSummary.groups || {};
   const entries = Object.entries(groups).sort((a, b) => b[1] - a[1]);
   const total = entries.reduce((s, e) => s + e[1], 0);
-  if (total === 0) { box.innerHTML = "<i>无个体</i>"; return; }
-  const colors = ["#3498db", "#e74c3c", "#2ecc71", "#f39c12", "#9b59b6", "#1abc9c", "#e67e22", "#34495e"];
-  const cx = 80, cy = 80, r = 65;
-  let startAngle = -Math.PI / 2;
-  let paths = "", legend = "";
-  entries.forEach((e, i) => {
-    const [name, count] = e;
-    const pct = count / total;
-    const endAngle = startAngle + pct * Math.PI * 2;
-    const x1 = cx + r * Math.cos(startAngle);
-    const y1 = cy + r * Math.sin(startAngle);
-    const x2 = cx + r * Math.cos(endAngle);
-    const y2 = cy + r * Math.sin(endAngle);
-    const large = (endAngle - startAngle) > Math.PI ? 1 : 0;
-    const color = colors[i % colors.length];
-    if (pct >= 1) {
-      paths += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${color}" stroke="#fff" stroke-width="1"/>`;
-    } else {
-      paths += `<path d="M${cx},${cy} L${x1},${y1} A${r},${r} 0 ${large} 1 ${x2},${y2} Z" fill="${color}" stroke="#fff" stroke-width="1"/>`;
-    }
-    legend += `<div style="display:flex;align-items:center;margin:2px 0;">
-      <span style="display:inline-block;width:12px;height:12px;background:${color};margin-right:6px;border-radius:2px;"></span>
-      <span style="font-size:13px;">${name}：${count}（${(pct * 100).toFixed(0)}%）</span>
-    </div>`;
-    startAngle = endAngle;
-  });
-  box.innerHTML = `
-    <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
-      <svg width="160" height="160" viewBox="0 0 160 160">${paths}<text x="${cx}" y="${cy + 5}" text-anchor="middle" font-size="16" font-weight="bold" fill="#333">${total}</text></svg>
-      <div style="flex:1;min-width:120px;">${legend}</div>
-    </div>
-  `;
+  if (total === 0) {
+    _echartDispose("pieChart");
+    box.innerHTML = "<i>无个体</i>";
+    return;
+  }
+
+  _echart("pieChart").setOption({
+    color: ["#3498db", "#e74c3c", "#2ecc71", "#f39c12", "#9b59b6", "#1abc9c", "#e67e22", "#34495e"],
+    tooltip: { trigger: "item", formatter: "{b}：{c}（{d}%）" },
+    legend: { orient: "vertical", right: 8, top: "middle", textStyle: { fontSize: 12 } },
+    series: [{
+      type: "pie",
+      radius: ["40%", "70%"],
+      center: ["38%", "50%"],
+      avoidLabelOverlap: true,
+      itemStyle: { borderColor: "#fff", borderWidth: 1 },
+      label: { show: false },
+      emphasis: { label: { show: true, fontWeight: "bold" } },
+      data: entries.map(([name, count]) => ({ name, value: count })),
+    }],
+  }, true);
 }
 
 // ===================== 政府面板 =====================

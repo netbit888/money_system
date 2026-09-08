@@ -215,6 +215,7 @@ class Handler(BaseHTTPRequestHandler):
                 "/economy.html": "economy.html",
                 "/common.css": "common.css",
                 "/common.js": "common.js",
+                "/echarts.min.js": os.path.join("product-launch", "_shared", "js", "echarts.min.js"),
             }
             if method == "GET" and path in STATIC_MAP:
                 self._static(STATIC_MAP[path])
