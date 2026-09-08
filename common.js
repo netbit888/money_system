@@ -122,6 +122,85 @@ function _setBusy(b) {
   document.querySelectorAll('button[data-lock]').forEach(btn => btn.disabled = b);
 }
 
+// ===================== 反馈辅助：Toast / 保存状态 / 顶栏 / KPI / loading =====================
+let _saveStatusTimer = null;
+let _loadingBtn = null;
+
+function toast(msg, type = "info") {
+  let box = document.getElementById("toastBox");
+  if (!box) {
+    box = document.createElement("div");
+    box.id = "toastBox";
+    box.className = "toast-box";
+    document.body.appendChild(box);
+  }
+  const t = document.createElement("div");
+  t.className = "toast toast-" + type;
+  t.textContent = msg;
+  box.appendChild(t);
+  requestAnimationFrame(() => t.classList.add("show"));
+  setTimeout(() => { t.classList.remove("show"); setTimeout(() => t.remove(), 300); }, 3000);
+}
+
+function setSaveStatus(state) {
+  const el = document.getElementById("saveStatus");
+  if (!el) return;
+  if (state === "saving") { el.textContent = "保存中…"; el.className = "save-status saving"; return; }
+  if (state === "saved") {
+    el.textContent = "已保存 ✓"; el.className = "save-status saved";
+    if (_saveStatusTimer) clearTimeout(_saveStatusTimer);
+    _saveStatusTimer = setTimeout(() => { el.textContent = ""; el.className = "save-status"; }, 2000);
+    return;
+  }
+  if (state === "error") { el.textContent = "保存失败"; el.className = "save-status error"; return; }
+  el.textContent = ""; el.className = "save-status";
+}
+
+function renderTopBar() {
+  const r = document.getElementById("topRound");
+  if (r) r.textContent = round;
+  const p = document.getElementById("topPop");
+  if (p) p.textContent = lastSummary.total || 0;
+}
+
+function renderKpiCards(metrics, summary) {
+  const grid = document.getElementById("kpiGrid");
+  if (!grid) return;
+  const m = metrics || {};
+  const total = (summary && summary.total) || 0;
+  const pct = (v) => (v == null) ? "—" : (Number(v) * 100).toFixed(1) + "%";
+  const num = (v, d) => (v == null || v === "") ? d : fmtNum(v);
+  const cards = [
+    { label: "总人口", value: num(total, "0"), sub: "" },
+    { label: "本回合成交量", value: num(m.volume, "—"), sub: "所有资源流转之和" },
+    { label: "需求满足率", value: pct(m.met_rate), sub: "met / demand" },
+    { label: "失业率", value: pct(m.unemployment), sub: "挂劳动力者未成交占比" },
+    { label: "基尼系数", value: (m.gini == null) ? "—" : Number(m.gini).toFixed(3), sub: "0=平等 1=集中" },
+    { label: "出生 / 死亡", value: `${num(m.born, 0)} / ${num(m.dead, 0)}`, sub: "本回合事件" },
+  ];
+  grid.innerHTML = cards.map(c =>
+    `<div class="kpi-card"><div class="kpi-label">${c.label}</div>` +
+    `<div class="kpi-value">${c.value}</div>` +
+    (c.sub ? `<div class="kpi-sub">${c.sub}</div>` : "") +
+    `</div>`
+  ).join("");
+}
+
+function setLoading(btn) {
+  if (_loadingBtn) clearLoading();
+  if (!btn) return;
+  _loadingBtn = btn;
+  btn.classList.add("loading");
+}
+function clearLoading() {
+  if (_loadingBtn) { _loadingBtn.classList.remove("loading"); _loadingBtn = null; }
+}
+
+function hidePageLoading() {
+  const el = document.getElementById("pageLoading");
+  if (el) { el.classList.add("done"); setTimeout(() => el.remove(), 300); }
+}
+
 // ===================== 显示切换（两页共用元素） =====================
 function toggleLog() {
   const logEl = document.getElementById("log");
@@ -203,12 +282,15 @@ function onHistFollowChange() {
   fetchHistoryAndRender();
 }
 
+let _histSliderTimer = null;
 function onHistSlider() {
   // 用户拖动滑块 = 主动离开"跟随最新"，锁定到所选历史区间
   histFollowLatest = false;
   const cb = document.getElementById("histFollow");
   if (cb) cb.checked = false;
-  fetchHistoryAndRender();
+  // 拖动时密集触发，做 120ms 防抖，只发最后一次请求
+  if (_histSliderTimer) clearTimeout(_histSliderTimer);
+  _histSliderTimer = setTimeout(() => { fetchHistoryAndRender(); }, 120);
 }
 
 async function fetchHistoryAndRender() {
@@ -298,6 +380,7 @@ function renderHistoryChart() {
 
   _echart("historyChart").setOption({
     color: ["#2c3e50", "#3498db", "#e74c3c", "#2ecc71", "#f39c12", "#9b59b6", "#1abc9c", "#e67e22", "#8e44ad", "#16a085", "#d35400", "#27ae60", "#c0392b", "#2980b9", "#f1c40f"],
+    textStyle: { color: _chartTextColor() },
     tooltip: { trigger: "axis" },
     legend: { type: "scroll", top: 0, textStyle: { fontSize: 12 } },
     grid: { left: 60, right: 16, top: 32, bottom: 56 },
@@ -372,6 +455,7 @@ function renderEconChart() {
 
   _echart("econChart").setOption({
     color: ["#c0392b", "#2980b9", "#8e44ad", "#16a085", "#d35400", "#27ae60"],
+    textStyle: { color: _chartTextColor() },
     tooltip: { trigger: "axis" },
     legend: { type: "scroll", top: 0, textStyle: { fontSize: 12 } },
     grid: { left: 60, right: 60, top: 32, bottom: 56 },
@@ -394,8 +478,9 @@ async function clearHistory() {
     await fetch('/clear-history', { method: 'POST' });
     historyData = [];
     renderHistoryChart();
+    toast("历史已清空", "success");
   } catch (e) {
-    alert(e.message);
+    toast("清空历史失败：" + e.message, "error");
   }
 }
 
@@ -461,6 +546,7 @@ function renderPieChart() {
 
   _echart("pieChart").setOption({
     color: ["#3498db", "#e74c3c", "#2ecc71", "#f39c12", "#9b59b6", "#1abc9c", "#e67e22", "#34495e"],
+    textStyle: { color: _chartTextColor() },
     tooltip: { trigger: "item", formatter: "{b}：{c}（{d}%）" },
     legend: { orient: "vertical", right: 8, top: "middle", textStyle: { fontSize: 12 } },
     series: [{
@@ -499,15 +585,16 @@ async function applyTaxRate() {
   if (_busy) return;
   const rate = parseFloat(document.getElementById("govTaxRate").value);
   if (isNaN(rate) || rate < 0 || rate > 1) {
-    alert("税率必须在 0~1 之间");
+    toast("税率必须在 0~1 之间", "error");
     return;
   }
   _setBusy(true);
   try {
     const r = await api("PUT", "/government", { tax_rate: rate });
     renderGovernment(r.government);
+    toast("税率已应用", "success");
   } catch (e) {
-    alert("设置税率失败：" + e.message);
+    toast("设置税率失败：" + e.message, "error");
   } finally {
     _setBusy(false);
   }
@@ -533,8 +620,9 @@ async function refreshPersonViews() {
 
 async function nextRound() {
   if (_busy) return;
-  if ((lastSummary.total || 0) === 0) { alert("请先创建个体"); return; }
+  if ((lastSummary.total || 0) === 0) { toast("请先创建个体", "error"); return; }
   _setBusy(true);
+  if (!_autoRunning) setLoading(document.getElementById("nextRoundBtn"));
   try {
     const r = await api("POST", "/next-round");
     personsTotal = (r.summary && r.summary.total) || 0;
@@ -546,10 +634,16 @@ async function nextRound() {
     const log = document.getElementById("log");
     if (log) log.textContent = r.log;
     renderGovernment(r.government);
-    await refreshPersonViews();
+    renderTopBar();
+    renderKpiCards(r.metrics, r.summary);
+    if (_autoRunning) {
+      renderPieChart();               // 自动运行期间跳过个体列表重拉，保证流畅
+    } else {
+      await refreshPersonViews();
+    }
     _refreshHistoryIfVisible();
-  } catch (e) { alert("下一回合失败：" + e.message); if (_autoRunning) stopAuto(); }
-  finally { _setBusy(false); }
+  } catch (e) { toast("下一回合失败：" + e.message, "error"); if (_autoRunning) stopAuto(); }
+  finally { clearLoading(); _setBusy(false); }
 }
 
 // ===================== 自动运行（回合模块，前端驱动）=====================
@@ -586,23 +680,25 @@ function stopAuto() {
   _autoRunning = false;
   if (_autoTimer) { clearTimeout(_autoTimer); _autoTimer = null; }
   updateAutoBtn();
+  // 停止后同步一次个体列表（自动运行期间为流畅跳过了列表刷新）
+  if (typeof refreshPersonViews === "function") refreshPersonViews();
 }
 
 function autoStep() {
   if (!_autoRunning) return;
   nextRound().then(() => {
     if (!_autoRunning) return;   // 执行期间已被暂停
-    let rate = parseFloat(document.getElementById("autoRate")?.value);
-    if (!isFinite(rate) || rate <= 0) rate = 60;
-    const interval = 60000 / rate;   // 实际速率受 nextRound 处理耗时限制
+    let interval = parseFloat(document.getElementById("autoRate")?.value);
+    if (!isFinite(interval) || interval <= 0) interval = 1000;   // 单位：毫秒/回合
     _autoTimer = setTimeout(autoStep, interval);
   });
 }
 
 async function calculate() {
   if (_busy) return;
-  if ((lastSummary.total || 0) === 0) { alert("请先创建个体"); return; }
+  if ((lastSummary.total || 0) === 0) { toast("请先创建个体", "error"); return; }
   _setBusy(true);
+  setLoading(document.getElementById("calcBtn"));
   try {
     const r = await api("POST", "/calculate");
     personsTotal = (r.summary && r.summary.total) || 0;
@@ -611,15 +707,18 @@ async function calculate() {
     const log = document.getElementById("log");
     if (log) log.textContent = r.log;
     renderGovernment(r.government);
+    renderTopBar();
+    renderKpiCards(r.metrics, r.summary);
     await refreshPersonViews();
-  } catch (e) { alert("交换计算失败：" + e.message); }
-  finally { _setBusy(false); }
+  } catch (e) { toast("交换计算失败：" + e.message, "error"); }
+  finally { clearLoading(); _setBusy(false); }
 }
 
 async function nextRoundAndCalculate() {
   if (_busy) return;
-  if ((lastSummary.total || 0) === 0) { alert("请先创建个体"); return; }
+  if ((lastSummary.total || 0) === 0) { toast("请先创建个体", "error"); return; }
   _setBusy(true);
+  setLoading(document.getElementById("nextAndCalcBtn"));
   try {
     const r = await api("POST", "/next-and-calc");
     personsTotal = (r.summary && r.summary.total) || 0;
@@ -631,16 +730,19 @@ async function nextRoundAndCalculate() {
     const log = document.getElementById("log");
     if (log) log.textContent = r.log;
     renderGovernment(r.government);
+    renderTopBar();
+    renderKpiCards(r.metrics, r.summary);
     await refreshPersonViews();
     _refreshHistoryIfVisible();
-  } catch (e) { alert("操作失败：" + e.message); }
-  finally { _setBusy(false); }
+  } catch (e) { toast("操作失败：" + e.message, "error"); }
+  finally { clearLoading(); _setBusy(false); }
 }
 
 async function resetRound() {
   if (_busy) return;
   if (!confirm("确定要重置回合吗？\n\n回合数将归零，并从 config 文件夹重新加载基础设置和个体列表。\n\n⚠️ 当前所有修改都会被覆盖。")) return;
   _setBusy(true);
+  setLoading(document.getElementById("resetRoundBtn"));
   try {
     const r = await api("POST", "/reset");
     defaultSettings = normalizeDefaults(r.defaults);
@@ -657,11 +759,14 @@ async function resetRound() {
     const log = document.getElementById("log");
     if (log) log.textContent = r.log;
     renderGovernment(r.government);
+    renderTopBar();
+    renderKpiCards(null, r.summary);
     if (typeof renderAll === 'function') renderAll();
     else renderPieChart();
     _refreshHistoryIfVisible();
-  } catch (e) { alert("重置失败：" + e.message); }
-  finally { _setBusy(false); }
+    toast("已重置，回合归零", "success");
+  } catch (e) { toast("重置失败：" + e.message, "error"); }
+  finally { clearLoading(); _setBusy(false); }
 }
 
 // ===================== 启动：拉取后端状态 =====================
@@ -676,6 +781,81 @@ async function loadState() {
   const rn = document.getElementById("roundNum");
   if (rn) rn.textContent = round;
   renderGovernment(s.government);
+  renderTopBar();
+  renderKpiCards(s.metrics, s.summary);
   if (typeof renderAll === 'function') renderAll();
   else renderPieChart();
+  hidePageLoading();
 }
+
+// 轻量刷新：只同步 summary/round/government/指标，不重渲染基础设置表单
+async function refreshSummary() {
+  const s = await api("GET", "/state");
+  defaultSettings = normalizeDefaults(s.defaults);
+  round = s.round;
+  lastSummary = s.summary;
+  personsTotal = (s.summary && s.summary.total) || 0;
+  renderGovernment(s.government);
+  renderTopBar();
+  renderKpiCards(s.metrics, s.summary);
+}
+
+// ===================== 键盘快捷键（仅回合页生效） =====================
+document.addEventListener("keydown", (e) => {
+  const ae = document.activeElement;
+  const tag = (ae && ae.tagName) || "";
+  const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(tag) || (ae && ae.isContentEditable);
+  if (typing) return;                       // 输入框内不拦截
+  if (!document.getElementById("nextRoundBtn")) return;   // 仅首页
+  if (e.code === "Space") { e.preventDefault(); nextRound(); }
+  else if (e.key === "p" || e.key === "P") { e.preventDefault(); toggleAuto(); }
+  else if (e.key === "r" || e.key === "R") { e.preventDefault(); resetRound(); }
+});
+
+// ===================== 窗口缩放：ECharts 自适应 =====================
+let _resizeTimer = null;
+window.addEventListener("resize", () => {
+  if (_resizeTimer) clearTimeout(_resizeTimer);
+  _resizeTimer = setTimeout(() => {
+    if (typeof echarts === "undefined") return;
+    ["pieChart", "historyChart", "econChart"].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) { const c = echarts.getInstanceByDom(el); if (c) c.resize(); }
+    });
+  }, 150);
+});
+
+// ===================== 暗色模式 =====================
+function _chartTextColor() {
+  return document.body.classList.contains("dark") ? "#c8cbd0" : "#333";
+}
+
+function syncThemeBtn() {
+  const btn = document.getElementById("themeBtn");
+  if (btn) btn.textContent = document.body.classList.contains("dark") ? "浅色模式" : "暗色模式";
+}
+
+function initTheme() {
+  let dark = false;
+  try { dark = localStorage.getItem("theme") === "dark"; } catch (e) {}
+  if (dark) document.body.classList.add("dark");
+  syncThemeBtn();
+}
+
+function toggleTheme() {
+  document.body.classList.toggle("dark");
+  const dark = document.body.classList.contains("dark");
+  try { localStorage.setItem("theme", dark ? "dark" : "light"); } catch (e) {}
+  syncThemeBtn();
+  // 重建图表，套用暗色主题文字色
+  if (typeof echarts !== "undefined") {
+    ["pieChart", "historyChart", "econChart"].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) { const c = echarts.getInstanceByDom(el); if (c) c.dispose(); }
+    });
+    if (typeof renderPieChart === "function") renderPieChart();
+    if (typeof fetchHistoryAndRender === "function") fetchHistoryAndRender();
+  }
+}
+
+initTheme();

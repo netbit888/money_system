@@ -230,6 +230,7 @@ class Handler(BaseHTTPRequestHandler):
                     "defaults": defaults_to_dict(sim.defaults),
                     "summary": sim.summary(),
                     "government": government_to_dict(sim.government),
+                    "metrics": sim.latest_metrics(),
                 })
                 return
 
@@ -328,17 +329,17 @@ class Handler(BaseHTTPRequestHandler):
 
             if method == "POST" and path == "/next-round":
                 log = sim.next_round()
-                self._json({"log": log, "summary": sim.summary(), "government": government_to_dict(sim.government), "duration_ms": sim.last_elapsed_ms})
+                self._json({"log": log, "summary": sim.summary(), "government": government_to_dict(sim.government), "duration_ms": sim.last_elapsed_ms, "metrics": sim.latest_metrics()})
                 return
 
             if method == "POST" and path == "/calculate":
                 log = sim.calculate()
-                self._json({"log": log, "summary": sim.summary(), "government": government_to_dict(sim.government), "duration_ms": sim.last_elapsed_ms})
+                self._json({"log": log, "summary": sim.summary(), "government": government_to_dict(sim.government), "duration_ms": sim.last_elapsed_ms, "metrics": sim.latest_metrics()})
                 return
 
             if method == "POST" and path == "/next-and-calc":
                 log = sim.next_round_and_calculate()
-                self._json({"log": log, "summary": sim.summary(), "government": government_to_dict(sim.government), "duration_ms": sim.last_elapsed_ms})
+                self._json({"log": log, "summary": sim.summary(), "government": government_to_dict(sim.government), "duration_ms": sim.last_elapsed_ms, "metrics": sim.latest_metrics()})
                 return
 
             if method == "POST" and path in ("/reset", "/load-config-folder"):

@@ -2,23 +2,32 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>经济系统 · 回合</title>
 <link rel="stylesheet" href="/common.css">
 </head>
 <body>
+<div id="pageLoading" class="page-loading"><span class="spinner"></span>加载中…</div>
 
 <div class="container">
+<div class="topbar">
+  <span class="topbar-stat">回合 <b id="topRound">0</b></span>
+  <span class="topbar-stat">个体 <b id="topPop">0</b></span>
+  <span class="topbar-stat" style="color:#b0b0b0;">快捷键：空格=下一回合 · P=自动 · R=重置</span>
+  <span class="topbar-spacer"></span>
+  <button id="themeBtn" class="theme-btn" onclick="toggleTheme()">暗色模式</button>
+  <span id="saveStatus" class="save-status"></span>
+</div>
 <div class="nav-bar">
   <a class="nav-link" href="/economy">配置管理 →</a>
 </div>
 
 <h1>回合（首页）</h1>
+<div id="kpiGrid" class="kpi-grid"></div>
 <div class="small">后端 Python 引擎 + 前端 fetch 调用。服务地址：<code id="apiBase">http://127.0.0.1:8000</code></div>
 
 <div class="panel" id="govPanel">
-  <div style="display:flex; justify-content:space-between; align-items:center;">
-    <h2 style="margin:0;">政府（税收抽取）</h2>
-  </div>
+  <h2 class="panel-title">政府（税收抽取）</h2>
   <div class="row" style="margin:8px 0; align-items:center;">
     <label>税率：<input id="govTaxRate" type="number" step="0.01" min="0" max="1" style="width:70px;"></label>
     <button class="btn-add" data-lock="1" onclick="applyTaxRate()">应用税率</button>
@@ -45,26 +54,35 @@
     </div>
   </div>
   <div class="btn-group">
-    <button class="btn-calc" data-lock="1" onclick="nextRound()">下一回合（含交换）</button>
+    <button id="nextRoundBtn" class="btn-calc" data-lock="1" onclick="nextRound()">下一回合（含交换）</button>
     <button id="autoBtn" class="btn-calc" onclick="toggleAuto()">▶ 自动运行</button>
-    <label class="small" style="margin-left:6px;">速度：<input id="autoRate" type="number" min="1" step="1" value="60" style="width:64px;"> 回合/分钟</label>
-    <button class="btn-calc" data-lock="1" onclick="calculate()">仅交换计算（不推进回合）</button>
-    <button class="btn-del" data-lock="1" onclick="resetRound()" style="padding:6px 16px;">重置回合</button>
+    <label class="small" style="margin-left:6px;">回合间隔：
+      <select id="autoRate" style="width:90px;">
+        <option value="100">0.1 秒</option>
+        <option value="250">0.25 秒</option>
+        <option value="500">0.5 秒</option>
+        <option value="1000" selected>1 秒</option>
+        <option value="2000">2 秒</option>
+        <option value="5000">5 秒</option>
+      </select>
+    </label>
+    <button id="calcBtn" class="btn-calc" data-lock="1" onclick="calculate()">仅交换计算（不推进回合）</button>
+    <button id="resetRoundBtn" class="btn-del" data-lock="1" onclick="resetRound()" style="padding:6px 16px;">重置回合</button>
   </div>
   <div class="btn-group">
     <button class="btn-toggle" onclick="toggleLog()" id="logToggleBtn">隐藏日志</button>
     <button class="btn-toggle" onclick="togglePieChart()" id="pieToggleBtn">隐藏扇形图</button>
-    <button class="btn-toggle" onclick="toggleHistoryChart()" id="historyToggleBtn">显示历史曲线</button>
+    <button class="btn-toggle" onclick="toggleHistoryChart()" id="historyToggleBtn">隐藏历史曲线</button>
     <button class="btn-toggle" onclick="toggleEconChart()" id="econToggleBtn">隐藏经济指标</button>
   </div>
   <div class="log" id="log" style="margin-top:12px;">等待操作...（前端 fetch 调用后端 API，引擎在 Python 跑）</div>
-  <div id="pieChartWrap" style="margin-top:12px; padding:8px; border-top:1px solid #ddd;">
-    <b style="font-size:14px;">个体种类比例</b><span style="font-size:12px; color:#888;">（母体与子代归为同类）</span>
+  <div id="pieChartWrap" class="chart-section">
+    <b class="chart-title">个体种类比例</b><span class="chart-sub">（母体与子代归为同类）</span>
     <div id="pieChart" style="margin-top:6px;height:220px;"></div>
   </div>
-  <div id="historyChartWrap" style="display:none; margin-top:12px; padding:8px; border-top:1px solid #ddd;">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-      <b style="font-size:14px;">历史曲线</b>
+  <div id="historyChartWrap" class="chart-section">
+    <div class="panel-head mb8">
+      <b class="chart-title">历史曲线</b>
       <div>
         <label style="font-size:12px; margin-right:8px;">
           <input type="checkbox" id="histShowTotal" checked onchange="renderHistoryChart()"> 总人口
@@ -95,15 +113,15 @@
     </div>
     <div id="historyChart" style="margin-top:6px;height:320px;"></div>
   </div>
-  <div id="econChartWrap" style="margin-top:12px; padding:8px; border-top:1px solid #ddd;">
-    <b style="font-size:14px;">经济指标</b><span style="font-size:12px; color:#888;">（看不到生态？这里看价格/贫富/集中度/就业）</span>
+  <div id="econChartWrap" class="chart-section">
+    <b class="chart-title">经济指标</b><span class="chart-sub">（看不到生态？这里看价格/贫富/集中度/就业）</span>
     <div style="margin:6px 0;">
-      <label style="font-size:12px; margin-right:8px;"><input type="checkbox" id="ecPriceIndex" checked onchange="renderEconChart()"> 价格指数</label>
-      <label style="font-size:12px; margin-right:8px;"><input type="checkbox" id="ecGini" checked onchange="renderEconChart()"> 基尼系数</label>
-      <label style="font-size:12px; margin-right:8px;"><input type="checkbox" id="ecHhiWealth" onchange="renderEconChart()"> 财富HHI</label>
-      <label style="font-size:12px; margin-right:8px;"><input type="checkbox" id="ecHhiPop" onchange="renderEconChart()"> 人口HHI</label>
-      <label style="font-size:12px; margin-right:8px;"><input type="checkbox" id="ecUnemployment" checked onchange="renderEconChart()"> 失业率</label>
-      <label style="font-size:12px; margin-right:8px;"><input type="checkbox" id="ecMetRate" checked onchange="renderEconChart()"> 满足率</label>
+      <label style="font-size:12px; margin-right:8px;" title="每单位商品平均值多少钱（成交加权，首个非空点归一为100）"><input type="checkbox" id="ecPriceIndex" checked onchange="renderEconChart()"> 价格指数</label>
+      <label style="font-size:12px; margin-right:8px;" title="财富分布集中度：0=完全平等，1=完全集中"><input type="checkbox" id="ecGini" checked onchange="renderEconChart()"> 基尼系数</label>
+      <label style="font-size:12px; margin-right:8px;" title="产业财富集中度 Σ份额²，越接近1越垄断"><input type="checkbox" id="ecHhiWealth" onchange="renderEconChart()"> 财富HHI</label>
+      <label style="font-size:12px; margin-right:8px;" title="产业人口集中度 Σ份额²，越接近1越垄断"><input type="checkbox" id="ecHhiPop" onchange="renderEconChart()"> 人口HHI</label>
+      <label style="font-size:12px; margin-right:8px;" title="挂出劳动力却0成交者占挂单者比例"><input type="checkbox" id="ecUnemployment" checked onchange="renderEconChart()"> 失业率</label>
+      <label style="font-size:12px; margin-right:8px;" title="需求被满足的比例（met/demand），生态健康信号"><input type="checkbox" id="ecMetRate" checked onchange="renderEconChart()"> 满足率</label>
     </div>
     <div id="econChart" style="margin-top:6px;height:320px;"></div>
   </div>
@@ -122,6 +140,7 @@
     if (log) log.textContent = "已加载后端状态：个体数 " + (lastSummary.total || 0) + "，回合 " + round;
     if (typeof fetchHistoryAndRender === "function") fetchHistoryAndRender();
   } catch (e) {
+    hidePageLoading();
     const log = document.getElementById("log");
     if (log) log.textContent = "加载后端状态失败：" + e.message + "\n请先启动 app.py（python app.py）";
   }
