@@ -19,9 +19,16 @@ from engine import Simulation, Person, Metabolism, Need, Rule, _person_to_dict
 
 RES = ["食物", "钱", "劳动力"]
 
-# 改动前基线：N=600 / 20 回合 / seed=42 / α=0.3（覆盖繁殖/死亡/抚养/交换/调价全路径）
-# 内存基线（N=10000 单回合峰值分配）：21.75 MB → 目标 < 4 MB
-BASELINE_DIGEST = "dd4904da1f9177bfa5b4907c1cb9c065bba7c59907baf1ad1f45d2dbc01e7e58"
+# 基线：N=600 / 20 回合 / seed=42 / α=0.3（覆盖繁殖/死亡/抚养/交换/调价全路径）
+#
+# 摘要沿革：
+#   dd4904da…  P3 基线（单趟扫描出清）
+#   72b9543f…  多轮迭代出清后 —— **有意的行为变更**。
+#              旧摘要受「市场出清顺序敏感」污染：资源名的 Unicode 码点序会
+#              决定谁能成交。修复后顺序只影响成交先后，不再决定能否成交
+#              （顺序不变量由 test_market_order_invariance.py 守卫）
+# 内存基线（N=10000 单回合峰值分配）：21.75 MB → 目标 < 6 MB
+BASELINE_DIGEST = "72b9543f73a08b8f964d1715d2d30f331fb996b173058ad6fecc7f229050e4c5"
 
 _failures = []
 

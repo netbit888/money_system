@@ -176,6 +176,11 @@ def gini(values: list[float]) -> float:
 # gini 采样上限：财富列表超过该规模时均匀采样，近似计算，避免 O(N log N)（3.5）
 _GINI_SAMPLE_SIZE = 10000
 
+# 市场出清：多轮迭代上限 + 最小成交量。
+# 后者用于避免浮点残渣（1e-18 级别的成交）让迭代永远无法收敛。
+_MAX_CLEARING_ROUNDS = 8
+_TRADE_EPS = 1e-9
+
 
 # ===================== 历史分层降采样 =====================
 # 长时间运行时历史会无限增长，写入是「每 10 回合全量重写」→ O(R²)。
@@ -903,11 +908,11 @@ class Simulation:
         else:
             out.append(f"参与：{n_entities} 人 / {n_needs} 需求 / {n_rules} 挂牌")
 
-        # 需求收集 + 按资源分组（A3：双指针扫描的核心）
-        needs_by_res: dict[str, list[tuple[int, float]]] = {}
+        # 待满足需求清单 (买方索引, 资源, 剩余需求) —— 多轮迭代出清的工作集
+        pending: list[tuple[int, str, float]] = []
         for i in range(n_entities):
             for nd in needs_list[i]:
-                needs_by_res.setdefault(nd.key, []).append((i, float(nd.amount)))
+                pending.append((i, nd.key, float(nd.amount)))
 
         # 卖家索引：资源 → [(卖方索引, 规则), ...]，按 rate 升序预排序
         # 同一卖家的多 ask 通过 attrs[i][res] 实时维护库存，自然同步
@@ -935,102 +940,129 @@ class Simulation:
                 "trades": 0, "volume": 0.0, "demand": 0.0, "met": 0.0,
             })
 
-        if not needs_by_res:
+        # 需求统计：总需求与买方数只统计一次，不随迭代轮次重复累加
+        for a_idx, res, amount in pending:
+            _st = _res_stat(res)
+            _st["demand"] += amount
+            _st["buyers"].add(ids[a_idx])
+
+        if not pending:
             out.append("── 无需求 ──")
         else:
             if verbose:
                 out.append("── 需求匹配 ──")
-            # 按资源种类顺序处理（保证跨市场依赖一致：先食物市场，再钱市场...）
-            # 每个市场内：买家按出现顺序，卖家按 rate 升序，双指针扫描出清
-            # 复杂度：每市场 O(买家数 + 卖家数)，总和 O(N)，排序 O(N log N)
-            for res in sorted(needs_by_res.keys()):
-                buyers = needs_by_res[res]
-                sellers = sellers_by_res.get(res, [])
-                stat = _res_stat(res)
+            # ===== 多轮迭代出清 =====
+            # 单趟扫描会让「资源处理顺序」决定生死：买家支付能力是当刻读取的，
+            # 若其卖出市场排在买入市场之后，当回合就没钱买（实测同一配置仅翻转
+            # 顺序，100 回合后人口差 14%）。迭代到收敛后，顺序只影响成交先后，
+            # 不再决定能否成交。
+            # 成本控制：第 2 轮起只重跑「仍有未满足需求」者（工作集），
+            #           稳定态下第 1 轮即出清，额外开销接近 0。
+            for _rd in range(_MAX_CLEARING_ROUNDS):
+                if not pending:
+                    break
+                # 本轮按资源重新分组（只含仍未满足的需求）
+                by_res: dict[str, list[tuple[int, float]]] = {}
+                for a_idx, res, amount in pending:
+                    by_res.setdefault(res, []).append((a_idx, amount))
+                next_pending: list[tuple[int, str, float]] = []
+                traded_this_round = False
 
-                if verbose:
-                    out.append("")
-                    out.append(f"── 资源 {res}：{len(buyers)} 买 / {len(sellers)} 卖 ──")
-
-                # 双指针：seller_idx 单调前进，库存耗尽才前进；下个买家接着用剩余卖家
-                seller_idx = 0
-                n_sellers = len(sellers)
-
-                for a_idx, amount in buyers:
-                    stat["buyers"].add(ids[a_idx])
-                    stat["demand"] += amount
+                for res in sorted(by_res.keys()):
+                    buyers = by_res[res]
+                    sellers = sellers_by_res.get(res, [])
+                    stat = _res_stat(res)
 
                     if verbose:
-                        out.append(f"[{names[a_idx]}] 买 {res}×{fmt_num(amount)}")
-                    if amount <= 0:
-                        if verbose:
-                            out.append("  → 购买量为 0，跳过")
-                        continue
+                        out.append("")
+                        out.append(f"── 第 {_rd + 1} 轮 资源 {res}：{len(buyers)} 买 / {len(sellers)} 卖 ──")
 
-                    remaining = amount
-                    while remaining > 0 and seller_idx < n_sellers:
-                        b_idx, rule, idx = sellers[seller_idx]
-                        if b_idx == a_idx:
-                            seller_idx += 1
-                            continue
-                        inv = float(attrs[b_idx].get(res, 0))
-                        if inv <= 0:
-                            seller_idx += 1
-                            continue
-                        pay_res = rule.buy
-                        rate = rule.rate
-                        a_pay = float(attrs[a_idx].get(pay_res, 0))
-                        if a_pay <= 0:
+                    # 双指针：本轮内 seller_idx 单调前进；每轮重置
+                    # （某个卖家可能在别的市场买入后库存增加）
+                    seller_idx = 0
+                    n_sellers = len(sellers)
+
+                    for a_idx, amount in buyers:
+                        if verbose:
+                            out.append(f"[{names[a_idx]}] 买 {res}×{fmt_num(amount)}")
+                        if amount <= _TRADE_EPS:
                             if verbose:
-                                out.append(f"  ✗ 无{pay_res}支付")
-                            break  # 买家没钱，跳过该买家（下个卖家更贵，更付不起）
-
-                        max_by_budget = a_pay / rate
-                        q = min(remaining, inv, max_by_budget)
-                        if q <= 0:
-                            # 卖家库存或买家支付不足，下个卖家
-                            seller_idx += 1
+                                out.append("  → 购买量为 0，跳过")
                             continue
 
-                        pay = q * rate
-                        # 政府抽税：从支付额中按税率抽取，卖家实收 = pay - tax
-                        tax = pay * self.government.tax_rate
-                        seller_gets = pay - tax
-                        # 经济指标：累积本回合成交（资源/支付额/卖家），供历史曲线使用
-                        _ta = trade_agg.setdefault(res, {"qty": 0.0, "pay": {}, "sellers": set()})
-                        _ta["qty"] += q
-                        _ta["pay"][pay_res] = _ta["pay"].get(pay_res, 0.0) + pay
-                        _ta["sellers"].add(ids[b_idx])
-                        attrs[a_idx][pay_res] = a_pay - pay
-                        attrs[a_idx][res] = float(attrs[a_idx].get(res, 0)) + q
-                        attrs[b_idx][res] = inv - q
-                        attrs[b_idx][pay_res] = float(attrs[b_idx].get(pay_res, 0)) + seller_gets
-                        rule_sold[(b_idx, idx)] = rule_sold.get((b_idx, idx), 0.0) + q
-                        self._last_tax[pay_res] = self._last_tax.get(pay_res, 0.0) + tax
-                        remaining -= q
+                        remaining = amount
+                        while remaining > _TRADE_EPS and seller_idx < n_sellers:
+                            b_idx, rule, idx = sellers[seller_idx]
+                            if b_idx == a_idx:
+                                seller_idx += 1
+                                continue
+                            inv = float(attrs[b_idx].get(res, 0))
+                            if inv <= _TRADE_EPS:
+                                seller_idx += 1
+                                continue
+                            pay_res = rule.buy
+                            rate = rule.rate
+                            a_pay = float(attrs[a_idx].get(pay_res, 0))
+                            if a_pay <= _TRADE_EPS:
+                                if verbose:
+                                    out.append(f"  ✗ 无{pay_res}支付")
+                                break  # 本轮没钱；下一轮卖出资产拿到钱后会重试
 
-                        stat["sellers"].add(ids[b_idx])
-                        stat["trades"] += 1
-                        stat["volume"] += q
-                        stat["met"] += q
+                            max_by_budget = a_pay / rate
+                            q = min(remaining, inv, max_by_budget)
+                            if q <= _TRADE_EPS:
+                                # 卖家库存或买家支付不足，下个卖家
+                                seller_idx += 1
+                                continue
+
+                            pay = q * rate
+                            # 政府抽税：从支付额中按税率抽取，卖家实收 = pay - tax
+                            tax = pay * self.government.tax_rate
+                            seller_gets = pay - tax
+                            # 经济指标：累积本回合成交（资源/支付额/卖家），供历史曲线使用
+                            _ta = trade_agg.setdefault(res, {"qty": 0.0, "pay": {}, "sellers": set()})
+                            _ta["qty"] += q
+                            _ta["pay"][pay_res] = _ta["pay"].get(pay_res, 0.0) + pay
+                            _ta["sellers"].add(ids[b_idx])
+                            attrs[a_idx][pay_res] = a_pay - pay
+                            attrs[a_idx][res] = float(attrs[a_idx].get(res, 0)) + q
+                            attrs[b_idx][res] = inv - q
+                            attrs[b_idx][pay_res] = float(attrs[b_idx].get(pay_res, 0)) + seller_gets
+                            rule_sold[(b_idx, idx)] = rule_sold.get((b_idx, idx), 0.0) + q
+                            self._last_tax[pay_res] = self._last_tax.get(pay_res, 0.0) + tax
+                            remaining -= q
+
+                            stat["sellers"].add(ids[b_idx])
+                            stat["trades"] += 1
+                            stat["volume"] += q
+                            stat["met"] += q
+                            traded_this_round = True
+
+                            if verbose:
+                                out.append(f"  ✓ {names[b_idx]} 成交 {fmt_num(q)}，付 {fmt_num(pay)}{pay_res}（税 {fmt_num(tax)}，@{fmt_num(rate)}）")
+                            trades.append((
+                                names[a_idx], names[b_idx], res,
+                                q, pay, pay_res, rate, tax,
+                            ))
+
+                            # 卖家库存耗尽 → 下个卖家；否则继续用该卖家
+                            if inv - q <= _TRADE_EPS:
+                                seller_idx += 1
 
                         if verbose:
-                            out.append(f"  ✓ {names[b_idx]} 成交 {fmt_num(q)}，付 {fmt_num(pay)}{pay_res}（税 {fmt_num(tax)}，@{fmt_num(rate)}）")
-                        trades.append((
-                            names[a_idx], names[b_idx], res,
-                            q, pay, pay_res, rate, tax,
-                        ))
+                            met = amount - remaining
+                            if remaining <= _TRADE_EPS:
+                                out.append(f"  → 完成 {fmt_num(met)}/{fmt_num(amount)}")
+                            else:
+                                out.append(f"  → 成交 {fmt_num(met)}/{fmt_num(amount)}")
 
-                        # 卖家库存耗尽 → 下个卖家；否则继续用该卖家
-                        if inv - q <= 0:
-                            seller_idx += 1
+                        # 仍未满足 → 进入下一轮重试（下一轮可能已卖出资产拿到钱）
+                        if remaining > _TRADE_EPS:
+                            next_pending.append((a_idx, res, remaining))
 
-                    if verbose:
-                        met = amount - remaining
-                        if remaining <= 0:
-                            out.append(f"  → 完成 {fmt_num(met)}/{fmt_num(amount)}")
-                        else:
-                            out.append(f"  → 成交 {fmt_num(met)}/{fmt_num(amount)}")
+                pending = next_pending
+                if not traded_this_round:
+                    break
 
         # 汇总输出（非 verbose 模式）：按资源统计 + 整体
         if not verbose and resource_stats:
